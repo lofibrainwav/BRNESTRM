@@ -67,3 +67,22 @@ one invalid `Access-Control-Allow-Origin` header. CORS limits browser
 reads; it is not authentication. Never bind `0.0.0.0` without a separately
 reviewed authorization, firewall and TLS design. No user credentials,
 prompt text or private model data belong in this public repository.
+
+
+## Authenticated inference API
+
+Use `--api-key-file /absolute/private/path/to/0600-key-file` with a
+**private key file, never an inline `--api-key` argument** in committed
+scripts or LaunchAgents. Any BRNESTRM Keychain client credentials and the
+Hermes client's configured provider credentials must match the active
+server key **before** enabling authentication. Test an anonymous
+`GET /v1/models` returns HTTP 401 and then perform a synthetic request
+through the actual authorized BRNESTRM client, since `GET /health` may
+return 200 even if authenticated inference is broken.
+
+Avoid dueling supervisors: the Hermes managed runtime has its own
+process-ownership state. A separately installed login LaunchAgent must
+not be mistaken for a Hermes-managed server, and stale ownership records
+should not be treated as proof of an active Hermes runtime. Reconcile the
+service ownership contract before changing model port or native Hermes
+runtime settings.

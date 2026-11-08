@@ -78,3 +78,13 @@ See [macOS login recovery](docs/HERMES-INFERENCE-AUTOSTART.md) for the distinct 
 cannot fabricate evidence of new boot recovery. Production deployment requires
 a user-approved LaunchAgent and a separately reviewed private receipt location;
 no Mac reboot is initiated by this script.
+
+## Independent recovery drill
+
+`ops/independent-recovery-drill.py` uses only a mounted encrypted cloud
+archive, its signed-off SHA-256 manifest, the encrypted escrow record and a
+passphrase typed locally. It NEVER reads the live raw recovery key. Its
+authenticated extraction is in memory and only critical digest matches and
+file counts are reported. The actual owner must run it interactively to
+complete the full disaster-recovery gate. Run `--self-test` first; that
+check uses synthetic data only.
