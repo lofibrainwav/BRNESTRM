@@ -25,3 +25,6 @@ research_notes/
 DOC/
 integration-handoff/gemini/macos_local_auth_helper
 integration-handoff/gemini/BRNESTRM_SOURCE_SCOPE.json
+
+# Only the audited plaintext-free escrow implementation is tracked.
+!ops/recovery-key-escrow.py

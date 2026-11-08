@@ -52,3 +52,15 @@ credentials in environment files tracked by Git. These examples do not
 provision Keychain permissions, a private auth provider or working backup
 destinations automatically. Recovery-key escrow is deliberately a separate
 owner-held security step.
+
+
+## Optional recovery-key escrow
+
+`ops/recovery-key-escrow.py` is an interactive reference for encrypting a
+local backup decryption key under a **separate owner-chosen passphrase**.
+It uses AES-256-GCM and a slow PBKDF2-SHA256 key derivation, and refuses
+to replace existing key/escrow files. Set `BRNESTRM_GDRIVE_RECOVERY_PATH`
+to your own private, backed-up destination; no account or folder is
+embedded in public source. The operator must enter the passphrase on their
+own Mac and store it independently of the Mac and recovery archive.
+Synthetic tests do not establish actual disaster-recovery escrow.
