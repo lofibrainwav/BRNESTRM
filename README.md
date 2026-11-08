@@ -39,3 +39,16 @@ No third-party secrets, logs, local runtime data, binary helpers, backups,
 customer files or private project URLs may be committed.
 
 No license grant is implied. See docs/SECURITY.md.
+
+
+## Optional macOS operation scripts
+
+The ops/ directory contains public, de-identified reference scripts for
+local readiness monitoring, encrypted backup/restore and a status inspector.
+
+Set BRNESTRM_GDRIVE_RECOVERY_PATH to your own private cloud-sync folder
+before running the backup manager. Never put recovery keys or cloud
+credentials in environment files tracked by Git. These examples do not
+provision Keychain permissions, a private auth provider or working backup
+destinations automatically. Recovery-key escrow is deliberately a separate
+owner-held security step.

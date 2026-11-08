@@ -5037,6 +5037,7 @@
                     <span class="radar-auth-badge" id="localAuthStatusBadge" style="font-family: var(--font-mono); font-size: 10px; padding: 2px 8px; border-radius: 4px; background: rgba(255, 69, 58, 0.15); border: 1px solid rgba(255, 69, 58, 0.4); color: #ff453a;">UNAUTHENTICATED (FAIL_CLOSED)</span>
                     <button type="button" class="radar-pill-btn" id="btnLocalAuthLogin">Touch ID Login</button>
                     <button type="button" class="radar-pill-btn" id="btnLocalAuthLogout" style="display: none;">Logout</button>
+                    <span class="frame-meta" id="measuredGenerationTokens" title="Only model-reported prompt+completion tokens; prefix cache hits are NOT measured">Generation tokens: UNOBSERVED</span>
                     <span class="frame-meta" id="cachePrefixHashLabel">Contract: BRNESTRM_PROVENANCE_V1 · Verification pending</span>
                   </div>
                 </div>
@@ -5969,6 +5970,7 @@
             restored.activeSessionId:sessions[0].id;
           chatVaultKey=derived;chatVaultSalt=salt;chatVaultLast=original;
           renderSessions();renderThread(sessions.find(s=>s.id===activeSessionId));
+          updateMeasuredGenerationTokens();
         } else {
           chatVaultSalt=crypto.getRandomValues(new Uint8Array(16));
           chatVaultKey=await deriveChatVaultKey(passphrase,chatVaultSalt);
@@ -6792,6 +6794,24 @@
         toolsState.filter(t => t.on).length +
         benaiModsState.filter(m => m.on).length;
       document.getElementById('skillsCountBadge').textContent = String(activeTotal);
+    }
+
+    function updateMeasuredGenerationTokens() {
+      let prompt=0,completion=0,measured=0;
+      for (const sess of sessions) {
+        for (const msg of sess.messages || []) {
+          const usage=msg.usage;
+          if (!usage?.measured) continue;
+          const p=Number(usage.promptTokens),c=Number(usage.completionTokens);
+          if (!Number.isSafeInteger(p) || !Number.isSafeInteger(c) || p<0 || c<0) continue;
+          prompt+=p;completion+=c;measured++;
+        }
+      }
+      const label=document.getElementById('measuredGenerationTokens');
+      if (label) label.textContent=measured
+        ? 'Measured generation tokens: '+(prompt+completion).toLocaleString()+
+          ' · '+measured+' response(s) · cache hits UNOBSERVED'
+        : 'Generation tokens: UNOBSERVED · cache hits UNOBSERVED';
     }
 
     function renderSessions() {
@@ -8154,6 +8174,7 @@
             execution: data.execution || null
           });
           void persistEncryptedChats();
+          updateMeasuredGenerationTokens();
           if (helperLabel) {
             const sourceCount = data.sources?.citations?.length || 0;
             const workers = data.delegation?.workers || [];
@@ -9592,6 +9613,7 @@
     selectNode('folder-meta-atelier');
     renderSessions();
     renderThread(sessions[0]);
+    updateMeasuredGenerationTokens();
     syncLiveEcosystem();
     syncVault();
     /* Search requires an explicit user action; do not query private sources on page load. */

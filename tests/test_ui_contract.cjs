@@ -20,7 +20,7 @@ async function simulate({mode='ok',session='CPA',includeBrowser=false,stale=fals
     sessions,activeSessionId:'SYNTH-'+session,getDescendants:()=>[{name:'synthetic child'}],PROVIDER_META:{test:{label:'mock'},chatgpt:{label:'mock'}},
     skillsState:[{id:'skill-on',on:true},{id:'skill-off',on:false}],toolsState:[{id:'tool-on',on:true},{id:'tool-off',on:false}],
     safeFetch:async (...args)=>{const r=await c.fetch(...args);if(!r.ok){const e=new Error('HTTP 403');e.status=403;throw e;}return r;},
-    classifyHttpError:(status,err)=>({label:status===403?'권한 차단':'연결 실패'}),showToast:()=>{},persistEncryptedChats:async()=>true,
+    classifyHttpError:(status,err)=>({label:status===403?'권한 차단':'연결 실패'}),showToast:()=>{},persistEncryptedChats:async()=>true,updateMeasuredGenerationTokens:()=>{},
     currentAuthToken:null,currentAuthSessionId:'sess-ui-test',
     lessonsLedger:[{scope:'CPA',rule:'CPA_RULE'},{scope:'FAMILY',rule:'FAMILY_RULE'}],activeBrowserContext:'',
     browserState:invalidState?{}:{kind:'chatgpt',externalLlm:'Synthetic',url:'https://example.invalid/',recentMessages:[{role:'user',text:'SYNTH_PRIVATE_CONTEXT'}]},browserState2:null,activeFocusedPane:'top',isDualBrowser:false,covisionLabel:{textContent:''},
@@ -83,6 +83,7 @@ let results=[];function test(name,condition){results.push({test:name,result:cond
   test('chat history passphrase field stays password masked',html.includes('id="chatVaultPass" type="password"'));
   test('chat history restores only validated sessions',html.includes('chatVaultValidate(JSON.parse('));
   test('chat history avoids silently discarding unsaved tabs',html.includes('Replace unsaved current chats'));
+  test('measured generation tokens never claim cache hits',html.includes('updateMeasuredGenerationTokens()') && html.includes('cache hits UNOBSERVED'));
 
 
   const failed=results.filter(x=>x.result==='FAIL');console.log(JSON.stringify({total:results.length,passed:results.length-failed.length,failed:failed.length,results,scope:'isolated JS functions and fake data only; no server request',sha256:crypto.createHash('sha256').update(html).digest('hex')}));if(failed.length)process.exitCode=1;
