@@ -1,0 +1,27 @@
+# Local state and secrets: never publish
+.env
+.env.*
+.brnestrm/
+__pycache__/
+*.pyc
+*.sqlite
+*.sqlite3
+*.db
+*.pem
+*.key
+*.p12
+*.p8
+*.jsonl
+*.aesgcm
+*.tar
+*.tar.gz
+*.zip
+*.bin
+*token*
+*password*
+*recovery-key*
+brnestrm-corpus/
+research_notes/
+DOC/
+integration-handoff/gemini/macos_local_auth_helper
+integration-handoff/gemini/BRNESTRM_SOURCE_SCOPE.json
