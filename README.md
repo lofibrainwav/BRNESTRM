@@ -88,3 +88,14 @@ authenticated extraction is in memory and only critical digest matches and
 file counts are reported. The actual owner must run it interactively to
 complete the full disaster-recovery gate. Run `--self-test` first; that
 check uses synthetic data only.
+
+
+## Evidence-driven status semantics
+
+`ops/ops-status.py` only labels post-login reboot recovery verified after
+a fresh boot's independently armed `reboot-verifier` receipt. Locale-normalized
+`ps -o lstart=` times are diagnostic data, **not** automatic-boot proof.
+Backup runs verify the local/mounted cloud mirror, but
+`remoteProviderByteReadback` explicitly stays `UNVERIFIED_BY_SCHEDULER`
+until a separate provider-side download/hash check is implemented. Manual
+provider downloads must not be represented as recurring automated checks.

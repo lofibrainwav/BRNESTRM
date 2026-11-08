@@ -57,6 +57,74 @@ def post_cutover_e2e(records,cutover,chain_healthy):
             "loginAt":login.isoformat() if login else None,"knowledgeCompletedAt":None}
 
 
+def check_reboot_evidence(agents):
+    """Examine boottime vs process lstart to measure reboot recovery without guessing."""
+    try:
+        import re
+        boot_out = subprocess.check_output(['sysctl', '-n', 'kern.boottime'], timeout=3).decode()
+        m = re.search(r'sec\s*=\s*(\d+)', boot_out)
+        if not m:
+            return {'status': 'UNKNOWN_BOOTTIME'}
+        boot_sec = int(m.group(1))
+        boot_dt = datetime.datetime.fromtimestamp(boot_sec)
+
+        delays = {}
+        for name, info in agents.items():
+            pid = info.get('pid')
+            if not pid:
+                delays[name] = None
+                continue
+            try:
+                out = subprocess.check_output(['ps', '-p', str(pid), '-o', 'lstart='], timeout=3, env={**os.environ, 'LC_ALL': 'C'}).decode().strip()
+                dt = datetime.datetime.strptime(out, '%a %b %d %H:%M:%S %Y')
+                delays[name] = round((dt - boot_dt).total_seconds())
+            except Exception:
+                delays[name] = None
+
+        sup = delays.get('supervised')
+        alt = delays.get('alert')
+        herm = delays.get('hermes')
+
+        detail = {
+            'bootTime': boot_dt.isoformat(),
+            'delaysSecondsAfterBoot': delays,
+        }
+        # A process start close to boot is NOT proof of automatic startup:
+        # it may have been started manually. Only the armed, fresh-boot
+        # LaunchAgent observer is eligible to complete this gate.
+        try:
+            armed = json.loads((H/'reboot-verifier-armed.json').read_text())
+            witness = json.loads((H/'reboot-verifier-receipt.json').read_text())
+            armed_epoch = int(armed['armedAtEpoch'])
+            if boot_sec <= armed_epoch:
+                detail['status'] = 'PENDING_FRESH_REBOOT'
+                detail['note'] = 'Observer armed after this boot; a fresh reboot is required'
+            elif (witness.get('contract')=='BRNESTRM_POST_REBOOT_V1'
+                  and witness.get('armedAtEpoch')==armed_epoch
+                  and witness.get('bootEpoch')==boot_sec
+                  and witness.get('status')=='PASS'
+                  and witness.get('bootAgeSeconds',10**9)<=600
+                  and all(witness.get('agentChecks',{}).get(k) is True for k in (
+                    'com.local.brnestrm.supervised',
+                    'com.local.brnestrm.health-monitor',
+                    'com.local.brnestrm.hermes-llama',
+                    'com.local.brnestrm.daily-backup','readiness'))):
+                detail['status'] = 'VERIFIED_CLEAN_REBOOT_AUTO_RECOVERY'
+                detail['note'] = 'Fresh user-login boot witnessed all required services and READY'
+            else:
+                detail['status'] = 'PENDING_POST_REBOOT_OBSERVER'
+                detail['note'] = 'No matching successful fresh-boot observer receipt'
+        except Exception:
+            detail['status'] = 'UNVERIFIED_POST_REBOOT_OBSERVER'
+        if herm is not None and herm > 360:
+            detail['hermesStartDelayed'] = True
+        detail['verificationScope'] = 'POST_USER_LOGIN_ONLY'
+
+        return detail
+    except Exception as e:
+        return {'status': 'REBOOT_CHECK_ERROR', 'error': str(e)}
+
+
 def main():
  release=json.loads((STATE/'latest-validated-release.json').read_text())
  watch=json.loads((STATE/'supervisor-status.json').read_text())
@@ -79,10 +147,19 @@ def main():
  copy_index=sha(LIVE/'brnestrm-corpus/.brnestrm/graphrag.sqlite3')
  backup_dir=Path(os.environ.get('BRNESTRM_GDRIVE_RECOVERY_PATH',str(H/'UNCONFIGURED_CLOUD_SYNC')))
  backups=sorted(backup_dir.glob('*.aesgcm'))
+ sup_agent=launch('com.local.brnestrm.supervised')
+ alert_agent=launch('com.local.brnestrm.health-monitor')
+ hermes_agent=launch('com.local.brnestrm.hermes-llama')
+ reboot_evidence=check_reboot_evidence({
+  'supervised':sup_agent,
+  'alert':alert_agent,
+  'hermes':hermes_agent,
+ })
  summary={'checkedAt':datetime.datetime.now().astimezone().isoformat(),
     'activeRuntime':str(LIVE),'developmentSource':str(SOURCE),
-    'supervisedAgent':launch('com.local.brnestrm.supervised'),
-    'alertAgent':launch('com.local.brnestrm.health-monitor'),
+    'supervisedAgent':sup_agent,
+    'alertAgent':alert_agent,
+    'hermesLlamaAgent':hermes_agent,
     'scheduledDailyBackupAgent':launch('com.local.brnestrm.daily-backup'),
     'gatewayPid':watch.get('pid'),'gatewayState':watch.get('status'),
     'readiness':ready.get('overall'),'componentChecks':ready.get('checks'),
@@ -97,7 +174,7 @@ def main():
     'encryptedRecoveryKeyOnSeparateDevice':'UNVERIFIED_OWNER_ACTION_REQUIRED',
     'actualTouchIDOnNewLaunchAgent':acceptance['status'],
     'postCutoverKnowledgeEvidence':acceptance,
-    'completeMacRebootTest':'NOT_RUN',
+    'completeMacRebootTest':reboot_evidence,
     'supervisionScope':'AT_USER_LOGIN_NOT_PRELOGIN'}
  print(json.dumps(summary,ensure_ascii=False,indent=2))
 if __name__=='__main__':main()
