@@ -64,3 +64,7 @@ to your own private, backed-up destination; no account or folder is
 embedded in public source. The operator must enter the passphrase on their
 own Mac and store it independently of the Mac and recovery archive.
 Synthetic tests do not establish actual disaster-recovery escrow.
+
+## Hermes inference after a Mac restart
+
+See [macOS login recovery](docs/HERMES-INFERENCE-AUTOSTART.md) for the distinct local llama.cpp inference backend, its loopback-only service and health checks.
