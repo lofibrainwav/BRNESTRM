@@ -68,3 +68,13 @@ Synthetic tests do not establish actual disaster-recovery escrow.
 ## Hermes inference after a Mac restart
 
 See [macOS login recovery](docs/HERMES-INFERENCE-AUTOSTART.md) for the distinct local llama.cpp inference backend, its loopback-only service and health checks.
+
+
+## User-login reboot recovery observer
+
+`ops/reboot-verifier.py` is an evidence-only, local-only diagnostic for the
+**next** login after its installation. It intentionally reports
+`PENDING_FRESH_REBOOT` if started in the current boot, so manually running it
+cannot fabricate evidence of new boot recovery. Production deployment requires
+a user-approved LaunchAgent and a separately reviewed private receipt location;
+no Mac reboot is initiated by this script.
