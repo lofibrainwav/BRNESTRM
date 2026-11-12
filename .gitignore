@@ -28,3 +28,6 @@ integration-handoff/gemini/BRNESTRM_SOURCE_SCOPE.json
 
 # Only the audited plaintext-free escrow implementation is tracked.
 !ops/recovery-key-escrow.py
+
+# Desktop shell dependencies (Electron binary)
+desktop/node_modules/

@@ -1,0 +1,15 @@
+{
+  "name": "brnestrm-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "BRNESTRM console in a desktop window whose browser pane is a real browser view.",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "harden": "node harden-electron.cjs"
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "@electron/fuses": "2.1.3"
+  }
+}

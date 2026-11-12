@@ -68,7 +68,7 @@ function makeEnv(responses, opts = {}) {
     },
     renderBrowserViewport: () => { log.rendered1++; vp1.replaceChildren(); t1.textContent = 'P1 · Real page'; },
     renderBrowserViewport2: () => { log.rendered2++; vp2.replaceChildren(); },
-    updateCovisionRibbon: () => {}, updateNavBtnStates: () => {},
+    updateCovisionRibbon: () => {}, updateNavBtnStates: () => {}, stopShellView: () => {},
     activeFocusedPane: 'top', browserUrlInput: { value: '' }, browserState: null, browserState2: null,
     isDualBrowser: !!opts.dual, currentAuthToken: opts.token || null, currentAuthSessionId: 'sess-operator-test',
   };
@@ -253,7 +253,15 @@ function makeEnv(responses, opts = {}) {
   test('a fixed frame pipeline per view (workers capped, each exits when the view is not current)', html.includes('while (v.workers < SCREEN_PIPELINE && stillMine()) { v.workers++; frameWorker(); }') && html.includes('while (stillMine()) {') && html.includes('const SCREEN_PIPELINE = 2;'));
   test('a frame older than the one shown is dropped', html.includes('if (seq < v.shownSeq) continue;') && html.includes('v.shownSeq = seq;'));
   test('frames are decoded off-screen before the swap', html.includes('if (pre.decode) await pre.decode();'));
-  test('leaving dual mode stops the hidden pane screen', /stopScreenView\('p2'\);\n\s+setActiveFocusedPane\('top'\);/.test(html));
+  test('leaving dual mode stops the hidden pane screen and shell view', /stopScreenView\('p2'\);\n\s+stopShellView\('p2'\);\n\s+setActiveFocusedPane\('top'\);/.test(html));
+
+  // 9. Desktop shell: a real browser view over the pane when the console runs inside desktop/
+  test('the shell is used only when its version-1 bridge is present', html.includes("window.brnestrmShell && window.brnestrmShell.version === 1) ? window.brnestrmShell : null;"));
+  test('both panes prefer the shell view for safe web pages, never for the ledger', (html.match(/if \(desktopShell && browserState2?\.kind !== 'ledger' && isSafeFrameUrl\(browserState2?\.url\)\) \{ renderShellView\('p[12]'\); return; \}/g) || []).length === 2);
+  test('the shell view follows the pane box and hides when covered or no longer current', html.includes('desktopShell.setBounds(pane, rect);') && html.includes("document.querySelector('dialog[open], [aria-modal=\"true\"]") && html.includes('if (!stillMine()) { if (shellViews[pane] === s) stopShellView(pane); else s.stopped = true; return; }'));
+  test('a failure state hides the shell view first', /renderBrowserUnavailable\(sessionId, status, err, pane = paneForSession\(sessionId\)\) \{\n[^\n]+\n[^\n]+\n\s+stopShellView\(pane\);/.test(html));
+  test('back/forward/reload go to the shell view when it is shown', html.includes('if (shellViews[pane] && !shellViews[pane].stopped) { desktopShell[type](pane); return true; }'));
+  test('re-rendering the same session keeps the view (links followed inside it stay)', html.includes('// A re-render of the same session: keep the view'));
   test('frames do not overwrite an address being typed', html.includes("browserUrlInput?.addEventListener('input', () => { browserUrlDirty = true; });") && html.includes('!browserUrlDirty && document.activeElement !== browserUrlInput'));
   test('back/forward/reload drive the Ego tab in a screen view', ['back', 'forward', 'reload'].every(t => html.includes(`if (screenNav('${t}')) return;`)));
   test('Control+Escape releases the keyboard; the frame is focusable', html.includes("if (e.key === 'Escape' && (e.ctrlKey || e.metaKey))") && html.includes('img.tabIndex = 0;'));
