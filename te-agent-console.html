@@ -4608,6 +4608,127 @@
       .header-omnibar-slot #addBrowserPaneBtn { display: none; }
     }
 
+    /* Split mode makes .browser-stage position:relative, so its full-bleed `inset: 54px 0 0 0`
+       would push the pane 54px down and cut 54px off its bottom. Reset it. */
+    .main-stage.browser-split-mode .browser-stage { inset: auto !important; }
+
+    /* YouTube workstation: watch-page layout. The player comes first at full 16:9 width with the
+       now-playing title under it; "Up next" sits beside them when the pane is wide and below when
+       narrow. The template sets inline styles, so these overrides need !important. */
+    .browser-viewport { container: browserpane / size; }
+    .yt-workstation {
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    .yt-workstation:has(> .yt-ws-player-box) { grid-template-rows: auto auto auto minmax(0, 1fr); }
+    .yt-workstation > .yt-ws-header { grid-column: 1 / -1; }
+    /* Room left for the header strip (38px) and the now-playing title under the player. */
+    .yt-workstation { --yt-player-max-h: max(120px, calc(100cqh - 38px - 96px)); }
+    .yt-workstation > .yt-ws-player-box {
+      width: min(100%, calc(var(--yt-player-max-h) * 16 / 9)) !important;
+      max-height: none !important;
+      aspect-ratio: 16 / 9;
+      justify-self: center;
+      border-bottom: 0 !important;
+    }
+    .yt-workstation > .yt-ws-results-scroll { min-height: 0; padding: 12px !important; }
+    .yt-ws-now { padding: 12px 16px 4px; min-width: 0; }
+    .yt-ws-now[hidden] { display: none; }
+    .yt-ws-now-title {
+      margin: 0;
+      font-family: var(--font-sans);
+      font-size: 18px;
+      font-weight: 600;
+      line-height: 1.35;
+      color: #f7f6f2;
+      text-wrap: balance;
+      overflow-wrap: anywhere;
+    }
+    .yt-ws-now-meta { margin: 6px 0 0; font-family: var(--font-sans); font-size: 13px; color: #a4adba; }
+    @container browserpane (min-width: 760px) {
+      .yt-workstation:has(> .yt-ws-player-box) {
+        grid-template-columns: minmax(0, 1fr) clamp(280px, 34%, 402px);
+        grid-template-rows: auto auto minmax(0, 1fr);
+        column-gap: 16px;
+      }
+      .yt-workstation > .yt-ws-player-box {
+        grid-column: 1;
+        grid-row: 2;
+        align-self: start;
+        margin: 16px 0 0 16px;
+        width: min(calc(100% - 16px), calc((var(--yt-player-max-h) - 16px) * 16 / 9)) !important;
+        justify-self: start;
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .yt-workstation > .yt-ws-now { grid-column: 1; grid-row: 3; align-self: start; padding: 14px 0 0 16px; }
+      .yt-workstation:has(> .yt-ws-player-box) > .yt-ws-results-scroll {
+        grid-column: 2;
+        grid-row: 2 / span 2;
+        padding: 16px 16px 16px 0 !important;
+      }
+    }
+    .yt-card-row {
+      align-items: flex-start !important;
+      padding: 4px !important;
+      background: transparent !important;
+      border-color: transparent !important;
+      border-radius: 10px !important;
+    }
+    .yt-card-row:hover { background: rgba(255, 255, 255, 0.06) !important; }
+    .yt-card-row.is-playing {
+      background: rgba(202, 169, 107, 0.12) !important;
+      border-color: var(--polo-brass) !important;
+    }
+    .yt-card-row > div:first-child { width: 168px !important; border-radius: 8px !important; }
+    .yt-card-row .yt-card-title {
+      font-size: 13px !important;
+      line-height: 1.35 !important;
+      white-space: normal !important;
+      display: -webkit-box !important;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    /* Console-wide fixes from an adversarial UI pass. */
+    /* A focused off-screen control can no longer scroll the whole workspace sideways. */
+    .workspace-body { overflow: clip; }
+    /* Names the console's CSS references but never defines; aliased onto its own tokens. */
+    :root {
+      --bg-primary: var(--bg-canvas);
+      --bg-panel: var(--bg-elevated);
+      --bg-surface: var(--bg-card);
+      --bg-hover: var(--key-bg-hover);
+      --border-subtle: var(--line-structural);
+      --font-body: var(--font-sans);
+      --anim-fast: var(--duration-quick);
+      --ease-apple: var(--ease-smooth-out);
+    }
+    /* The radar surfaces are always dark, so their text uses the dark-mode ink in Paper too. */
+    .radar-workspace,
+    .radar-stat-box,
+    .radar-inspector-pane {
+      --ink-primary: #F2EFE6;
+      --ink-secondary: #B5B0A4;
+      --ink-muted: #A29E95;
+      --polo-brass: #CAA96B;
+    }
+    .radar-workspace { grid-template-columns: minmax(0, 1fr) minmax(0, 320px); }
+    .radar-canvas-toolbar,
+    .radar-filter-group { flex-wrap: wrap; }
+    .radar-canvas-pane { min-width: 0; }
+    @media (max-width: 1100px) {
+      .radar-workspace { grid-template-columns: minmax(0, 1fr); }
+    }
+    /* Toasts sit under the header instead of over the composer's Send and Voice buttons. */
+    .toast-bar { bottom: auto; top: 66px; }
+    /* Header tooltips open below the header; above it they were off-screen. */
+    .club-header [data-tip]::after { bottom: auto; top: calc(100% + 8px); }
+    .tab-count { color: #6B5A3A; }
+    html[data-resolved="dark"] .tab-count { color: var(--polo-brass); }
+    html[data-resolved="dark"] .frame-meta { color: #8DB3A2; }
+
     @media (max-width: 710px) {
       .composer-dock { padding-left: 10px; padding-right: 10px; }
       .composer-inner { padding: 9px 9px; }
@@ -4646,7 +4767,7 @@
           aria-expanded="false"
           aria-controls="providerHubPopover"
         >
-          <span class="led-dot ready" id="masterGatewayLed"></span>
+          <span class="led-dot" id="masterGatewayLed"></span>
           <span class="brnestrm-crest">BRNESTRM</span>
         </button>
 
@@ -4772,7 +4893,7 @@
           </button>
           <button type="button" class="harness-tab-btn" data-hub-tab="wallet">Wallet (Unconnected)</button>
         </div>
-        <span style="font-family: var(--font-mono); font-size: 10.5px; color: var(--polo-green);">Auto-Inject ON</span>
+        <span class="frame-meta">Auto-inject: not verified</span>
       </div>
 
       <!-- HUB TAB 1: PROVIDERS (ChatGPT Sub, Antigravity, Claude, Ollama) -->
@@ -5146,8 +5267,8 @@
                   </div>
                   <div class="radar-stat-box">
                     <span class="radar-stat-lbl">SQLite Integrity</span>
-                    <span class="radar-stat-val" id="rIntegrity" style="color: #30d158;">PRAGMA OK</span>
-                    <span class="radar-stat-sub">0 orphan references verified</span>
+                    <span class="radar-stat-val" id="rIntegrity" style="color: var(--ink-muted);">UNOBSERVED</span>
+                    <span class="radar-stat-sub">Not checked from this page yet</span>
                   </div>
                 </div>
 
@@ -5302,7 +5423,7 @@
               <!-- benai-mods #2 & #3: Helper Desk Subagent Bar + Cache-Clock Countdown Ribbon -->
               <div class="mods-ribbon-bar" id="modsRibbonBar">
                 <div class="helper-desk-strip">
-                  <span class="led-dot ready" style="width: 6px; height: 6px;"></span>
+                  <span class="led-dot ready" id="helperDeskLed" style="width: 6px; height: 6px;"></span>
                   <span style="font-weight: 600;" id="helperDeskStatusLabel">No task running</span>
                   <div class="helper-progress-track" title="Completes only after the server confirms results">
                     <div class="helper-progress-fill" id="helperProgressFill" style="width: 0%;"></div>
@@ -5562,7 +5683,7 @@
               <button type="button" class="btn-small primary" id="sendBtwBtn">Ask</button>
             </div>
             <div id="btwAnswerBox" style="font-size: 12px; color: var(--ink-primary); background: var(--bg-card); padding: 7px 9px; border-radius: 5px; border-left: 2px solid var(--polo-brass); margin-top: 4px;">
-              Ready. Queries here use live GraphRAG (embeddinggemma-2:270m) + Jev fast routing.
+              Queries here go to GraphRAG through the gateway when it is reachable. Nothing has been checked yet.
             </div>
           </div>
 
@@ -5606,8 +5727,7 @@
               <span class="provider-meta" id="replayStepBadge">Diff 3 / 3</span>
             </div>
             <div id="replayDiffViewer" style="font-family: var(--font-mono); font-size: 10.5px; background: var(--bg-code); color: #EAE6DC; padding: 7px 9px; border-radius: 5px;">
-              + [Live Bridge :8788] Wired workspace :8765, HyoDo v4.22.3 & Rust 17 bins
-              + [GraphRAG] Connected Ollama embeddinggemma-2:270m (768-dim)
+              No replay loaded. Connections are not shown here until a replay is opened.
             </div>
             <div style="display: flex; justify-content: space-between; margin-top: 4px;">
               <button type="button" class="btn-small" id="replayPrevBtn">← Prev Diff</button>
@@ -6011,9 +6131,18 @@
       btn.textContent=chatVaultConflict?'⚠ Chat conflict':
         chatVaultKey?'🔒 Chats encrypted':exists?'🔐 Unlock chats':'🔒 Save chats';
     }
+    // The dialog lives inside the transformed sidebar, which traps position:fixed; it is moved
+    // under <body> when opened and the rest of the console is made inert while it is open.
+    function setChatVaultModal(open) {
+      const shell=document.querySelector('.console-shell');
+      if(shell) shell.inert=open;
+    }
     function closeChatVaultDialog() {
       const el=document.getElementById('chatVaultDialog');
+      const wasOpen=!el.hidden;
       el.hidden=true;el.style.display='none';
+      setChatVaultModal(false);
+      if(wasOpen) document.getElementById('chatVaultBtn')?.focus();
       document.getElementById('chatVaultPass').value='';
       document.getElementById('chatVaultError').textContent='';
     }
@@ -6026,10 +6155,24 @@
       document.getElementById('chatVaultTitle').textContent=exists?'Unlock encrypted history':'Enable encrypted chat history';
       document.getElementById('chatVaultSubmit').textContent=exists?'Unlock & restore':'Encrypt & save';
       const dialog=document.getElementById('chatVaultDialog');
+      if(dialog.parentElement!==document.body) document.body.appendChild(dialog);
       dialog.hidden=false;dialog.style.display='flex';
+      setChatVaultModal(true);
       document.getElementById('chatVaultPass').focus();
     });
     document.getElementById('chatVaultCancel').addEventListener('click',closeChatVaultDialog);
+    document.getElementById('chatVaultDialog').addEventListener('keydown',event=>{
+      if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeChatVaultDialog();return;}
+      if(event.key!=='Tab') return;
+      const items=[...event.currentTarget.querySelectorAll('input,button,[tabindex]:not([tabindex="-1"])')].filter(el=>!el.disabled&&el.offsetParent!==null);
+      if(!items.length) return;
+      const first=items[0], last=items[items.length-1];
+      if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+      else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+    });
+    document.getElementById('chatVaultDialog').addEventListener('mousedown',event=>{
+      if(event.target===event.currentTarget) event.preventDefault();
+    });
     document.getElementById('chatVaultForm').addEventListener('submit',async event=>{
       event.preventDefault();
       const field=document.getElementById('chatVaultPass');
@@ -6242,9 +6385,9 @@
     }
 
     function escapeHtml(str) {
-      const d = document.createElement('div');
-      d.textContent = str || '';
-      return d.innerHTML;
+      // Also escapes quotes, because the result is used inside attribute values.
+      return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     // =========================================================================
@@ -6378,7 +6521,7 @@
       document.getElementById('activeModelLabel').textContent = node.model;
       document.getElementById('promptInput').placeholder =
         node.kind === 'folder_supervisor'
-          ? `Message ${node.name}; read-only research and verification are connected; writes require separate approval.`
+          ? `Message ${node.name}; read-only research and verification run only when the gateway allows them; writes require separate approval.`
           : `Message ${node.name}; verified sources are available after Touch ID; other tools are not applied.`;
 
       // Update Jeong & Cache, ARMS & Mods, and Sillok & Lessons Panels for the governing Folder Supervisor
@@ -7398,9 +7541,9 @@
           const rIntEl = document.getElementById('rIntegrity');
 
           if (r1El) r1El.textContent = `${r1.length} Daemons`;
-          if (r2El) r2El.textContent = `${r2.length} Rules · ${prov.ring02?.sillokRecordCount || 13} Sillok`;
+          if (r2El) r2El.textContent = `${r2.length} Rules · ${prov.ring02?.sillokRecordCount ?? '?'} Sillok`;
           if (r3El) r3El.textContent = `${r3.length} Chunks · ${teRadarEdges.length} Edges`;
-          if (rIntEl) rIntEl.textContent = (prov.ring03?.integrity || 'sqlite_pragma_ok').toUpperCase();
+          if (rIntEl) rIntEl.textContent = (prov.ring03?.integrity || 'unobserved').toUpperCase(); if (rIntEl) rIntEl.style.color = (/(^|_)OK$/.test(rIntEl.textContent) && !/NOT/.test(rIntEl.textContent)) ? '#30d158' : '#ff9f0a';
 
           teRadarSelectedNode = null;
           updatePipePromptButtonState();
@@ -7415,7 +7558,7 @@
           if (r1El) r1El.textContent = '0 Daemons (Offline)';
           if (r2El) r2El.textContent = '0 Rules (Offline)';
           if (r3El) r3El.textContent = '0 Chunks (Blocked Fail-Closed)';
-          if (rIntEl) rIntEl.textContent = 'BLOCKED_FAIL_CLOSED (권한 차단)';
+          if (rIntEl) rIntEl.textContent = 'BLOCKED_FAIL_CLOSED (권한 차단)'; if (rIntEl) rIntEl.style.color = (/(^|_)OK$/.test(rIntEl.textContent) && !/NOT/.test(rIntEl.textContent)) ? '#30d158' : '#ff9f0a';
           updatePipePromptButtonState();
         }
       } catch (err) {
@@ -7429,6 +7572,7 @@
           else if (classified.code === 504) rIntEl.textContent = 'TIMEOUT (연결 실패)';
           else if (classified.code === 500) rIntEl.textContent = 'SERVER_ERROR (서버 오류)';
           else rIntEl.textContent = 'CONNECTION_FAILED (연결 실패)';
+          rIntEl.style.color = '#ff9f0a';
         }
         updatePipePromptButtonState();
       }
@@ -8084,8 +8228,8 @@
 
     const replayDiffs = [
       '+ [Historical example] Bridge configuration; current status requires verification',
-      '+ [GraphRAG Engine] Connected Ollama embeddinggemma-2:270m (768-dim cosine + 1-hop graph)',
-      '+ [Real Local Inference] Connected qwen3.5:9b & qwen3.5:4b-64k (Hermes 262k llama-server)'
+      '+ [Historical example] GraphRAG engine on Ollama embeddinggemma-2:270m (768-dim cosine + 1-hop graph); not checked now',
+      '+ [Historical example] Local inference on qwen3.5:9b & qwen3.5:4b-64k (Hermes llama-server); not checked now'
     ];
     let replayIdx = 2;
     function updateReplayView() {
@@ -8138,6 +8282,9 @@
     // Escape Key Dismiss for Open Overlay Drawers
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
+        const vaultDialog = document.getElementById('chatVaultDialog');
+        if (vaultDialog && !vaultDialog.hidden) { closeChatVaultDialog(); return; }
+        if (typeof closeAllPopovers === 'function') closeAllPopovers();
         if (!atelierSidebar.classList.contains('is-collapsed')) {
           setSidebarOpen(false);
         }
@@ -8147,6 +8294,7 @@
           if (btwBtn) {
             btwBtn.classList.remove('is-latched-green');
             btwBtn.setAttribute('aria-pressed', 'false');
+            if (btwSideDrawer.contains(document.activeElement) || document.activeElement === document.body) btwBtn.focus();
           }
         }
       }
@@ -8211,6 +8359,7 @@
       const helperBar = document.getElementById('helperProgressFill');
       dispatchPrompt.inFlight = true;
       if (helperLabel) helperLabel.textContent = 'Running · server phases not yet observed';
+      document.getElementById('helperDeskLed')?.classList?.replace('brass', 'ready');
       if (helperBar) helperBar.style.width = '0%';
 
       try {
@@ -8281,6 +8430,7 @@
           ? 'BUSY · duplicate execution prevented'
           : err.status === 424 ? 'Verifier failed · no complete result'
           : 'Failed · explicit retry required';
+        document.getElementById('helperDeskLed')?.classList?.replace('ready', 'brass');
         if (helperBar) helperBar.style.width = '0%';
         sess.messages.push({
           role: 'agent',
@@ -8457,7 +8607,7 @@
     }
 
     async function fetchBrowserState(sessionId = 'sess-1') {
-      const seq = ++browserStateSeq[sessionId];
+      const seq = browserStateSeq[sessionId] = (browserStateSeq[sessionId] || 0) + 1;
       const isLatest = () => seq === browserStateSeq[sessionId];
       let res;
       try {
@@ -8475,6 +8625,7 @@
       try {
         const st = await res.json();
         if (!isLatest()) return;
+        if (!st || typeof st !== 'object' || typeof st.kind !== 'string') throw new Error('browser state has no kind');
         if (sessionId === 'sess-2') {
           browserState2 = st;
           renderBrowserViewport2();
@@ -8525,6 +8676,8 @@
         }
         if (res.ok) {
           const st = await res.json();
+          // A completed navigation is newer than any state request still in flight.
+          browserStateSeq[sessionId] = (browserStateSeq[sessionId] || 0) + 1;
           if (!isBrowserOpen) {
             setBrowserOpen(true);
           }
@@ -8845,7 +8998,7 @@
           <div class="web-viewport-container" style="width: 100%; height: 100%; display: flex; flex-direction: column;">
             <iframe
               class="web-viewport-frame"
-              src="${browserState.url}"
+              src="${escapeHtml(browserState.url)}"
               title="${escapeHtml(browserState.title || 'Web Frame')}"
               style="width: 100%; height: 100%; border: none; flex: 1;"
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
@@ -8894,11 +9047,15 @@
                 id="ytMainPlayerIframe_${paneId}"
                 class="yt-player-frame"
                 style="width: 100%; height: 100%; border: none;"
-                src="https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0"
+                src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(String(videoId))}?autoplay=1&rel=0"
                 title="YouTube Player"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                 allowfullscreen
               ></iframe>
+            </div>
+            <div class="yt-ws-now" id="ytWsNow_${paneId}" hidden>
+              <p class="yt-ws-now-title"></p>
+              <p class="yt-ws-now-meta"></p>
             </div>
           ` : ''}
 
@@ -8922,6 +9079,14 @@
       const cardsContainer = document.getElementById(`ytWsCards_${paneId}`);
       const countEl = document.getElementById(`ytWsResultsCount_${paneId}`);
       let currentActiveVid = videoId;
+      const nowEl = document.getElementById(`ytWsNow_${paneId}`);
+      const setNowPlaying = (v) => {
+        if (!nowEl) return;
+        nowEl.hidden = !v;
+        if (!v) return;
+        nowEl.querySelector('.yt-ws-now-title').textContent = String(v.title || '');
+        nowEl.querySelector('.yt-ws-now-meta').textContent = [v.channel, v.views].filter(Boolean).map(String).join(' · ');
+      };
 
       const doSearch = async (term) => {
         if (!cardsContainer) return;
@@ -8940,16 +9105,17 @@
 
             if (countEl) countEl.textContent = `${data.videos.length} live results · ${formatObservedTime(panelStates.youtube.lastSuccessTime)}`;
             const isRowLayout = !!currentActiveVid;
+            setNowPlaying(isRowLayout ? data.videos.find(v => v.id === currentActiveVid) : null);
             cardsContainer.style = isRowLayout ? 'display: flex; flex-direction: column; gap: 8px;' : 'display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px;';
 
             cardsContainer.innerHTML = data.videos.map(v => {
               const isPlaying = (v.id === currentActiveVid);
               if (isRowLayout) {
                 return `
-                  <div class="yt-card-row ${isPlaying ? 'is-playing' : ''}" data-vid="${v.id}" data-url="${v.url}" style="display: flex; gap: 10px; padding: 6px; background: ${isPlaying ? 'rgba(202, 169, 107, 0.12)' : 'rgba(255,255,255,0.03)'}; border: 1px solid ${isPlaying ? 'var(--polo-brass)' : 'rgba(255,255,255,0.08)'}; border-radius: 6px; cursor: pointer; align-items: center; transition: background var(--anim-fast), border-color var(--anim-fast);">
+                  <div class="yt-card-row ${isPlaying ? 'is-playing' : ''}" data-vid="${escapeHtml(String(v.id))}" data-url="${escapeHtml(String(v.url))}" style="display: flex; gap: 10px; padding: 6px; background: ${isPlaying ? 'rgba(202, 169, 107, 0.12)' : 'rgba(255,255,255,0.03)'}; border: 1px solid ${isPlaying ? 'var(--polo-brass)' : 'rgba(255,255,255,0.08)'}; border-radius: 6px; cursor: pointer; align-items: center; transition: background var(--anim-fast), border-color var(--anim-fast);">
                     <div style="position: relative; width: 96px; aspect-ratio: 16/9; background: #000; border-radius: 4px; overflow: hidden; flex-shrink: 0;">
-                      <img src="https://i.ytimg.com/vi/${v.id}/mqdefault.jpg" alt="${escapeHtml(v.title)}" style="width: 100%; height: 100%; object-fit: cover;" loading="lazy" />
-                      <span style="position: absolute; bottom: 2px; right: 2px; background: rgba(0,0,0,0.85); color: #fff; font-family: var(--font-mono); font-size: 9px; padding: 1px 3px; border-radius: 2px;">${v.duration}</span>
+                      <img src="https://i.ytimg.com/vi/${encodeURIComponent(String(v.id))}/mqdefault.jpg" alt="${escapeHtml(v.title)}" style="width: 100%; height: 100%; object-fit: cover;" loading="lazy" />
+                      <span style="position: absolute; bottom: 2px; right: 2px; background: rgba(0,0,0,0.85); color: #fff; font-family: var(--font-mono); font-size: 9px; padding: 1px 3px; border-radius: 2px;">${escapeHtml(String(v.duration || ''))}</span>
                     </div>
                     <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;">
                       <div class="yt-card-title" style="font-size: 11px; font-weight: 600; color: #fff; line-height: 1.3; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">${escapeHtml(v.title)}</div>
@@ -8960,10 +9126,10 @@
                 `;
               } else {
                 return `
-                  <div class="yt-card-grid" data-vid="${v.id}" data-url="${v.url}" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.09); border-radius: 6px; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; transition: transform var(--anim-fast), border-color var(--anim-fast);">
+                  <div class="yt-card-grid" data-vid="${escapeHtml(String(v.id))}" data-url="${escapeHtml(String(v.url))}" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.09); border-radius: 6px; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; transition: transform var(--anim-fast), border-color var(--anim-fast);">
                     <div style="position: relative; width: 100%; aspect-ratio: 16/9; background: #000; overflow: hidden;">
-                      <img src="https://i.ytimg.com/vi/${v.id}/mqdefault.jpg" alt="${escapeHtml(v.title)}" style="width: 100%; height: 100%; object-fit: cover;" loading="lazy" />
-                      <span style="position: absolute; bottom: 4px; right: 4px; background: rgba(0,0,0,0.8); color: #fff; font-family: var(--font-mono); font-size: 9.5px; padding: 1px 4px; border-radius: 2px;">${v.duration}</span>
+                      <img src="https://i.ytimg.com/vi/${encodeURIComponent(String(v.id))}/mqdefault.jpg" alt="${escapeHtml(v.title)}" style="width: 100%; height: 100%; object-fit: cover;" loading="lazy" />
+                      <span style="position: absolute; bottom: 4px; right: 4px; background: rgba(0,0,0,0.8); color: #fff; font-family: var(--font-mono); font-size: 9.5px; padding: 1px 4px; border-radius: 2px;">${escapeHtml(String(v.duration || ''))}</span>
                     </div>
                     <div style="padding: 8px; display: flex; flex-direction: column; gap: 4px; flex: 1;">
                       <div class="yt-card-title" style="font-size: 11.5px; font-weight: 600; color: #fff; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">${escapeHtml(v.title)}</div>
@@ -8991,7 +9157,7 @@
                 const playerFrame = document.getElementById(`ytMainPlayerIframe_${paneId}`);
                 if (playerFrame) {
                   currentActiveVid = clickVid;
-                  playerFrame.src = `https://www.youtube-nocookie.com/embed/${clickVid}?autoplay=1&rel=0`;
+                  playerFrame.src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(clickVid)}?autoplay=1&rel=0`;
                   if (browserUrlInput && activeFocusedPane === (paneId === 'p2' ? 'bottom' : 'top')) {
                     browserUrlInput.value = clickUrl;
                   }
@@ -9237,7 +9403,7 @@
           <div class="web-viewport-container" style="width: 100%; height: 100%; display: flex; flex-direction: column;">
             <iframe
               class="web-viewport-frame"
-              src="${browserState2.url}"
+              src="${escapeHtml(browserState2.url)}"
               title="${escapeHtml(browserState2.title || 'Pane 2 Web Frame')}"
               style="width: 100%; height: 100%; border: none; flex: 1;"
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
@@ -9477,8 +9643,9 @@
           return;
         } else if (e.key === 'Enter' || e.key === ' ') {
           document.documentElement.style.setProperty('--split-chat-width', '480px');
-          resizer.setAttribute('aria-valuenow', '480');
-          if (badge) badge.textContent = '480px · Standard Snap';
+          const snapped = Math.max(340, Math.min(480, splitChatHalfWidth()));
+          resizer.setAttribute('aria-valuenow', String(snapped));
+          if (badge) badge.textContent = `${snapped}px · Standard Snap`;
           e.preventDefault();
           return;
         }
@@ -9517,8 +9684,9 @@
 
       resizer.addEventListener('dblclick', () => {
         document.documentElement.style.setProperty('--split-chat-width', '480px');
-        resizer.setAttribute('aria-valuenow', '480');
-        if (badge) badge.textContent = '480px · Standard Snap';
+        const snapped = Math.max(340, Math.min(480, splitChatHalfWidth()));
+        resizer.setAttribute('aria-valuenow', String(snapped));
+        if (badge) badge.textContent = `${snapped}px · Standard Snap`;
       });
     }
 
@@ -9690,6 +9858,32 @@
       executePingPong();
     });
 
+    // Closed drawers are only translated and transparent, so they kept keyboard focus; a focused
+    // hidden field scrolled the whole workspace sideways. Keep them inert while closed.
+    [['atelierSidebar', el => el.classList.contains('is-collapsed')],
+     ['btwSideDrawer', el => !el.classList.contains('is-open')]].forEach(([id, isClosed]) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const sync = () => { el.inert = isClosed(el); };
+      sync();
+      if (typeof MutationObserver === 'function') {
+        new MutationObserver(sync).observe(el, { attributes: true, attributeFilter: ['class'] });
+      }
+    });
+
+    const chatColumnForAria = document.querySelector('.main-stage .thread-scroll');
+    const chatResizerForAria = document.getElementById('chatWidthResizer');
+    if (chatColumnForAria && chatResizerForAria && typeof ResizeObserver === 'function') {
+      new ResizeObserver(() => {
+        if (!document.querySelector('.main-stage.browser-split-mode')) return;
+        const w = Math.round(chatColumnForAria.getBoundingClientRect().width);
+        if (!w) return;
+        chatResizerForAria.setAttribute('aria-valuenow', String(w));
+        const b = document.getElementById('chatResizerBadge');
+        if (b) b.textContent = `${w}px`;
+      }).observe(chatColumnForAria);
+    }
+
     // Initialize Draggable Splitters
     initSplitterDrag();
     initChatResizerDrag();
@@ -9752,6 +9946,7 @@
         state = 'UNOBSERVED';
       }
       badge.textContent = 'CORE: ' + state + (state === 'READY' ? ' · HTTP checks' : '');
+      document.getElementById('masterGatewayLed')?.classList.toggle('ready', state === 'READY');
       badge.title = detail;
       if (previousReadiness === 'READY' && state !== 'READY') {
         showToast('Core health degraded or unreachable: ' + detail, 'warning',

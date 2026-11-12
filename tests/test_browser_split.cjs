@@ -41,6 +41,7 @@ class FakeEl {
 }
 
 const failureCode = extract('    // Browser pane failure states', '    async function navigateBrowser(');
+const ytFnRaw = () => extract('function renderYouTubeWorkstation(', '\n    }\n');
 
 // responses: list of { kind: 'status'|'throw'|'badjson'|'ok', status, delay }
 function makeEnv(responses) {
@@ -141,6 +142,57 @@ function makeEnv(responses) {
   test('chat column never exceeds half of the split stage', rule('.main-stage.browser-split-mode .thread-scroll').split(chatWidth).length >= 4);
   test('docked composer follows the same chat width', rule('.main-stage.browser-split-mode .composer-dock').split(chatWidth).length >= 3);
   test('the splitter uses the same half-width cap', (html.match(/window\.innerWidth - 360, splitChatHalfWidth\(\)\)/g) || []).length === 2 && html.includes('function splitChatHalfWidth()'));
+
+  // 4. Split-mode pane position and the YouTube watch layout
+  test('split mode resets the full-bleed 54px inset of the browser stage', /\.main-stage\.browser-split-mode \.browser-stage\s*\{\s*inset:\s*auto !important;\s*\}/.test(css));
+  test('the browser pane is a named size container', /\.browser-viewport\s*\{\s*container:\s*browserpane \/ size;\s*\}/.test(css));
+  const ytPlayer = rule('.yt-workstation > .yt-ws-player-box');
+  test('the YouTube player keeps 16:9 and also fits the pane height', /max-height:\s*none !important/.test(ytPlayer) && /aspect-ratio:\s*16 \/ 9/.test(ytPlayer) && /calc\(var\(--yt-player-max-h\) \* 16 \/ 9\)/.test(ytPlayer));
+  test('up next sits beside the player when the pane is wide', /@container browserpane \(min-width: 760px\)\s*\{\s*\.yt-workstation:has\(> \.yt-ws-player-box\)/.test(css) && /:has\(> \.yt-ws-player-box\) > \.yt-ws-results-scroll\s*\{\s*grid-column:\s*2/.test(css));
+  test('the playing video title is shown under the player as text', ytFnRaw().includes('class="yt-ws-now"') && /setNowPlaying = \(v\) =>[\s\S]*?textContent = String\(v\.title/.test(ytFnRaw()));
+  test('up next rows use watch-page thumbnails and two-line titles', /width:\s*168px !important/.test(rule('.yt-card-row > div:first-child')) && /-webkit-line-clamp:\s*2/.test(rule('.yt-card-row .yt-card-title')));
+  const ytFn = ytFnRaw();
+  test('YouTube result fields from the server are escaped', !/\$\{v\.(id|url|duration)\}/.test(ytFn) && ytFn.includes('encodeURIComponent(String(v.id))') && ytFn.includes('embed/${encodeURIComponent(clickVid)}'));
+
+  // 5. Console-wide fixes from the adversarial pass
+  test('the workspace cannot be scrolled sideways by a focused hidden control', /\.workspace-body\s*\{\s*overflow:\s*clip;\s*\}/.test(css));
+  test('closed drawers are kept inert', /\['atelierSidebar', el => el\.classList\.contains\('is-collapsed'\)\]/.test(html) && /\['btwSideDrawer', el => !el\.classList\.contains\('is-open'\)\]/.test(html) && html.includes('el.inert = isClosed(el)'));
+  test('the chat-vault dialog leaves the transformed sidebar and is modal', html.includes("if(dialog.parentElement!==document.body) document.body.appendChild(dialog);") && html.includes('shell.inert=open') && /chatVaultDialog'\)\.addEventListener\('keydown'[\s\S]{0,120}Escape/.test(html));
+  test('Escape also closes the hub popovers', /if \(e\.key === 'Escape'\) \{[\s\S]{0,260}?if \(typeof closeAllPopovers === 'function'\) closeAllPopovers\(\);/.test(html));
+  test('every referenced CSS name is defined in the console itself', (() => {
+    const used = new Set([...html.matchAll(/var\((--[a-zA-Z0-9-]+)\)/g)].map(m => m[1]));
+    const defined = new Set([...html.matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)].map(m => m[1]));
+    const scriptSet = new Set([...html.matchAll(/setProperty\('(--[a-zA-Z0-9-]+)'/g)].map(m => m[1]));
+    return [...used].every(v => defined.has(v) || scriptSet.has(v));
+  })());
+  test('radar surfaces use light ink in Paper', /\.radar-workspace,\s*\.radar-stat-box,\s*\.radar-inspector-pane\s*\{\s*--ink-primary:\s*#F2EFE6/.test(css));
+  test('radar inspector cannot overflow its card', /\.radar-workspace\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 320px\);\s*\}/.test(css));
+  test('toasts no longer cover the composer', /\.toast-bar\s*\{\s*bottom:\s*auto;\s*top:\s*66px;\s*\}/.test(css));
+  test('header tooltips open below the header', /\.club-header \[data-tip\]::after\s*\{\s*bottom:\s*auto;\s*top:\s*calc\(100% \+ 8px\);/.test(css));
+  test('the gateway LED is not green until readiness is READY', html.includes('<span class="led-dot" id="masterGatewayLed"></span>') && html.includes("classList.toggle('ready', state === 'READY')"));
+  test('the integrity tile has no default OK and its colour follows the text', html.includes('id="rIntegrity" style="color: var(--ink-muted);">UNOBSERVED') && !html.includes("|| 'sqlite_pragma_ok'") && !html.includes('|| 13} Sillok') && (html.match(/rIntEl\.style\.color/g) || []).length === 3);
+  test('a failed helper task does not keep a green LED', html.includes("getElementById('helperDeskLed')?.classList?.replace('ready', 'brass')"));
+  test('static copy no longer claims unchecked connections', !/verification are connected|use live GraphRAG|Wired workspace :8765|Connected Ollama|Auto-Inject ON/.test(html));
+  test('no control characters slipped into the file', !/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(html));
+
+  // 6. Findings of the adversarial verification pass
+  const escCtx = {}; vm.createContext(escCtx);
+  vm.runInContext(extract('    function escapeHtml(str) {', '\n    }\n') + '\n    }', escCtx);
+  const esc = escCtx.escapeHtml('x" onload="alert(1)\' <b>&');
+  test('escapeHtml escapes quotes for attribute values', esc === 'x&quot; onload=&quot;alert(1)&#39; &lt;b&gt;&amp;' && escCtx.escapeHtml(null) === '');
+  test('player and web frames escape their URLs', html.includes('embed/${encodeURIComponent(String(videoId))}') && html.includes('src="${escapeHtml(browserState.url)}"') && html.includes('src="${escapeHtml(browserState2.url)}"') && !/src="\$\{browserState2?\.url\}"/.test(html));
+  e = makeEnv([{ kind: 'ok' }]);
+  await e.ctx.fetchBrowserState('sess-new-1'); await tick();
+  test('a newly created session id still renders its state', e.log.rendered1 === 1);
+  e = makeEnv([{ kind: 'ok' }]); e.ctx.fetch = async () => ({ ok: true, status: 200, json: async () => ({}) });
+  await e.ctx.fetchBrowserState('sess-1'); await tick();
+  test('a 200 without a usable state is an error, not a blank frame', e.log.rendered1 === 0 && e.vp1.children[0].dataset.kind === 'error' && e.vp1.children[0].textContent.includes('HTTP 200'));
+  test('a completed navigation invalidates older state requests', /const st = await res\.json\(\);\s*\/\/ A completed navigation[^\n]*\n\s*browserStateSeq\[sessionId\] = \(browserStateSeq\[sessionId\] \|\| 0\) \+ 1;/.test(html));
+  const okRe = /\(\/\(\^\|_\)OK\$\/\.test\(rIntEl\.textContent\) && !\/NOT\/\.test\(rIntEl\.textContent\)\)/;
+  test('NOT_OK integrity is never green', (html.match(new RegExp(okRe.source, 'g')) || []).length === 2);
+  test('Escape closes the vault dialog wherever focus is, and Tab stays inside', /if \(vaultDialog && !vaultDialog\.hidden\) \{ closeChatVaultDialog\(\); return; \}/.test(html) && html.includes("if(event.key!=='Tab') return;"));
+  test('radar toolbar wraps instead of overlapping the inspector', /\.radar-canvas-toolbar,\s*\.radar-filter-group\s*\{\s*flex-wrap:\s*wrap;\s*\}/.test(css) && /--polo-brass:\s*#CAA96B/.test(css));
+  test('chat resizer reports the rendered width', html.includes("chatResizerForAria.setAttribute('aria-valuenow', String(w))") && (html.match(/const snapped = Math\.max\(340, Math\.min\(480, splitChatHalfWidth\(\)\)\);/g) || []).length === 2 && !/\n\s*resizer\.setAttribute\('aria-valuenow', '480'\);/.test(html));
 
   // Honest copy elsewhere in the pane
   test('the ChatGPT card no longer claims an authenticated session', !html.includes('is active and authenticated'));
