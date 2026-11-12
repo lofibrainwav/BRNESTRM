@@ -21,6 +21,7 @@ Security:
   - POST requires Origin == http://127.0.0.1:8788 (or localhost:8788). No wildcard CORS.
   - Secrets are never returned by any endpoint; only the last 4 characters.
 """
+import base64
 import hashlib
 import fcntl
 import errno
@@ -152,15 +153,6 @@ def keychain_get(account):
 def keychain_delete(account):
     subprocess.run(["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account],
                    capture_output=True, timeout=10)
-
-
-def public_vault(state):
-    out = []
-    for v in state.get("vault", []):
-        present = keychain_get(v["id"]) is not None
-        out.append({k: v[k] for k in ("id", "name", "scope", "autoInject", "last4", "createdAt") if k in v}
-                   | {"storedIn": "macOS Keychain" if present else "MISSING", "present": present})
-    return out
 
 
 # ---------------------------------------------------------------- sillok audit ledger
@@ -1269,6 +1261,118 @@ def _screen_goto(session_id, state):
     return bool(r and r[0] == 200)
 
 
+# ---- Vault & Keys: secrets in the owner's macOS Keychain ---------------------------------
+# Names are listed to a signed-in console (vault:manage). Saving and deleting each need a fresh
+# local Touch ID approval through the authority's step_up. Secret values are never returned to a
+# browser and never appear in a process argument list (security -i stdin).
+# Items are created with an empty trusted-application list (-T ""), so reading a value always
+# asks the owner, even for /usr/bin/security run by another local process. The stored value is
+# the base64 of the secret (keeps the batch line free of quotes); a reader must decode it.
+VAULT_SERVICE = os.environ.get("BRNESTRM_VAULT_SERVICE", "BRNESTRM-vault")
+VAULT_INDEX = os.environ.get("BRNESTRM_VAULT_INDEX", os.path.join(os.path.expanduser("~"), ".brnestrm", "vault-index.json"))
+SECURITY_BIN = os.environ.get("BRNESTRM_SECURITY_BIN", "/usr/bin/security")
+VAULT_PERMISSION = "vault:manage"
+VAULT_NAME_RE = re.compile(r"[A-Za-z0-9_.:@/-]{1,64}")      # always used with fullmatch
+VAULT_SCOPE_RE = re.compile(r"[A-Za-z0-9 _.:@/-]{1,64}")
+VAULT_MAX_SECRET = 2048    # keeps the security -i line (base64) well under its line buffer
+VAULT_MAX_ITEMS = 200
+_vault_lock = threading.Lock()
+
+
+def _vault_name_ok(name):
+    return isinstance(name, str) and VAULT_NAME_RE.fullmatch(name) is not None
+
+
+def _vault_index_load():
+    try:
+        with open(VAULT_INDEX, "r", encoding="utf-8") as f:
+            items = json.load(f)
+        return [i for i in items if isinstance(i, dict) and _vault_name_ok(i.get("name"))]
+    except (OSError, ValueError):
+        return []
+
+
+def _vault_index_save(items):
+    d = os.path.dirname(VAULT_INDEX)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".vault-index-")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(items, f, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, VAULT_INDEX)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _keychain(args=None, batch_line=None):
+    """Run security with fixed arguments, or one command on stdin (-i). Returns (returncode, stderr)."""
+    try:
+        if batch_line is not None:
+            r = subprocess.run([SECURITY_BIN, "-i"], input=batch_line + "\n", capture_output=True, text=True, timeout=15)
+        else:
+            r = subprocess.run([SECURITY_BIN] + args, capture_output=True, text=True, timeout=15)
+        return r.returncode, (r.stderr or "").strip()
+    except Exception:
+        return -1, "security_failed"
+
+
+def _vault_exists(name):
+    # Without -w, find-generic-password returns attributes only: no secret, no prompt.
+    return _keychain(["find-generic-password", "-s", VAULT_SERVICE, "-a", name])[0] == 0
+
+
+def vault_delete(name):
+    rc, err = _keychain(batch_line=f'delete-generic-password -s "{VAULT_SERVICE}" -a "{name}"')
+    return not _vault_exists(name)
+
+
+def vault_store(name, secret):
+    # Replace by delete + add: updating an item that has an empty trusted-app list would prompt.
+    if _vault_exists(name) and not vault_delete(name):
+        return False
+    encoded = base64.b64encode(secret.encode("utf-8")).decode("ascii")
+    rc, err = _keychain(batch_line=f'add-generic-password -s "{VAULT_SERVICE}" -a "{name}" -T "" -w "{encoded}"')
+    return rc == 0 and not err and _vault_exists(name)
+
+
+def public_vault(items, check=False):
+    return [{"id": i["name"], "name": i["name"], "scope": i.get("scope", "Global"), "created": i.get("created"),
+             "store": "macOS Keychain", **({"present": _vault_exists(i["name"])} if check else {})} for i in items]
+
+
+def require_step_up(headers, action, peer_port):
+    """Capability (vault:manage or the given permission) plus a fresh owner approval for one action."""
+    auth_header = headers.get("Authorization", "") if headers else ""
+    if not auth_header.startswith("Bearer "):
+        return False, 403, "forbidden: sign in with Touch ID first"
+    session_id = headers.get("X-Session-ID", "").strip()
+    ok_orig, orig_code, orig_msg, req_origin = extract_and_verify_request_origin(headers, is_mutating=True)
+    if not ok_orig or not req_origin:
+        return False, orig_code, orig_msg
+    try:
+        import sys
+        handoff_gemini = os.path.join(BASE_DIR, "integration-handoff", "gemini")
+        if handoff_gemini not in sys.path:
+            sys.path.insert(0, handoff_gemini)
+        from candidate_auth_authority import CandidateAuthAuthority
+        auth = CandidateAuthAuthority.get_gateway_singleton(
+            state_file_path=os.path.join(BASE_DIR, ".brnestrm", "revocations.json"))
+        if not hasattr(auth, "step_up"):
+            return False, 403, "step_up_not_configured"
+        return auth.step_up(token_string=auth_header[7:].strip(), request_session_id=session_id,
+                            request_origin=req_origin, required_scope=BROWSER_SCOPE,
+                            required_permission=VAULT_PERMISSION, action=action, peer_port=peer_port)
+    except Exception:
+        return False, 500, "internal_error: step-up failed"
+
+
 def _targets_this_gateway(normalized):
     try:
         parsed = urllib.parse.urlparse(normalized)
@@ -1533,8 +1637,13 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/providers":
             return self._json(200, providers())
         if p == "/api/vault":
-            ok, status_code, err_msg = check_private_data_access(self.headers, resource="vault and credentials")
-            return self._json(status_code, {"ok": False, "error": err_msg})
+            ok_auth, status_code, err_msg, _ = check_authenticated_capability(
+                self.headers, required_scope=BROWSER_SCOPE, required_permission=VAULT_PERMISSION)
+            if not ok_auth:
+                return self._json(status_code, {"ok": False, "error": err_msg})
+            with _vault_lock:
+                items = _vault_index_load()
+            return self._json(200, {"ok": True, "vault": public_vault(items, check=True), "store": "macOS Keychain"})
         if p == "/api/rust-verify":
             ok, status_code, err_msg = check_private_data_access(self.headers, resource="database verification")
             return self._json(status_code, {"ok": False, "error": err_msg})
@@ -1852,7 +1961,7 @@ class Handler(BaseHTTPRequestHandler):
             # Server-side allowlists for scopes and permissions
             ALLOWED_WORKSPACE_SCOPES = {"te-design-house", "SYSTEM"}
             ALLOWED_PERMISSIONS_BY_SCOPE = {
-                "te-design-house": {"read:provenance", "read:knowledge", "control:browser"},
+                "te-design-house": {"read:provenance", "read:knowledge", "control:browser", "vault:manage"},
                 "SYSTEM": {"read:provenance", "read:hermes_status"}
             }
 
@@ -1963,8 +2072,57 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(500, {"ok": False, "error": f"internal_error: logout failed: {str(e)}"})
 
         if p in ("/api/vault/add", "/api/vault/delete"):
-            ok, status_code, err_msg = check_private_data_access(self.headers, body=body, resource="vault credential mutation")
-            return self._json(status_code, {"ok": False, "error": err_msg})
+            ok_orig, orig_code, orig_msg, _ = extract_and_verify_request_origin(self.headers, is_mutating=True)
+            if not ok_orig:
+                return self._json(orig_code, {"ok": False, "error": orig_msg})
+            ok_auth, status_code, err_msg, auth_payload = check_authenticated_capability(
+                self.headers, required_scope=BROWSER_SCOPE, required_permission=VAULT_PERMISSION)
+            if not ok_auth:
+                return self._json(status_code, {"ok": False, "error": err_msg})
+            if not isinstance(body, dict):
+                return self._json(400, {"ok": False, "error": "bad_request"})
+            adding = p == "/api/vault/add"
+            name = body.get("name") if adding else body.get("id")
+            if not _vault_name_ok(name):
+                return self._json(400, {"ok": False, "error": "bad_request: name must be 1-64 of A-Z a-z 0-9 _ . : @ / -"})
+            if adding:
+                secret = body.get("secret")
+                scope = body.get("scope", "Global")
+                if not isinstance(secret, str) or not 0 < len(secret) <= VAULT_MAX_SECRET:
+                    return self._json(400, {"ok": False, "error": f"bad_request: secret must be 1-{VAULT_MAX_SECRET} characters"})
+                if not isinstance(scope, str) or not VAULT_SCOPE_RE.fullmatch(scope):
+                    scope = "Global"
+            with _vault_lock:
+                items = _vault_index_load()
+            if adding and len(items) >= VAULT_MAX_ITEMS and not any(i["name"] == name for i in items):
+                return self._json(409, {"ok": False, "error": "vault_full"})
+            if not adding and not any(i["name"] == name for i in items):
+                return self._json(404, {"ok": False, "error": "not_found"})
+            # One fresh local Touch ID approval per save or delete, naming the key; replacing an
+            # existing value says so.
+            verb = ("replace" if any(i["name"] == name for i in items) or _vault_exists(name) else "save") if adding else "delete"
+            ok_up, up_code, up_msg = require_step_up(self.headers, f"vault {verb} {name}", self.client_address[1])
+            if not ok_up:
+                return self._json(up_code if up_code in (400, 401, 403, 408, 409, 429, 503) else 403,
+                                  {"ok": False, "error": up_msg})
+            with _vault_lock:
+                done = vault_store(name, secret) if adding else vault_delete(name)
+                if not done:
+                    return self._json(503, {"ok": False, "error": "keychain_write_failed"})
+                items = [i for i in _vault_index_load() if i["name"] != name]
+                if adding:
+                    items.append({"name": name, "scope": scope, "created": int(time.time())})
+                try:
+                    _vault_index_save(items)
+                except Exception:
+                    if adding:
+                        vault_delete(name)   # never leave a value the console cannot see
+                    return self._json(500, {"ok": False, "error": "vault_index_write_failed"})
+            sub = auth_payload.get("sub", "unknown") if auth_payload else "unknown"
+            append_sillok_record(prompt=f"VAULT_{'SAVE' if adding else 'DELETE'} name={name}",
+                                 target="vault." + ("save" if adding else "delete"),
+                                 reply=f"principal={sub},store=keychain", synthesis="SUCCESS")
+            return self._json(200, {"ok": True, "vault": public_vault(items)})
         if p == "/api/lessons":
             ok, status_code, err_msg = check_private_data_access(self.headers, body=body, resource="lessons mutation")
             return self._json(status_code, {"ok": False, "error": err_msg})

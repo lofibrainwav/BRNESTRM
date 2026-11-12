@@ -217,7 +217,9 @@ function makeEnv(responses, opts = {}) {
   test('chat resizer reports the rendered width', html.includes("chatResizerForAria.setAttribute('aria-valuenow', String(w))") && (html.match(/const snapped = Math\.max\(340, Math\.min\(480, splitChatHalfWidth\(\)\)\);/g) || []).length === 2 && !/\n\s*resizer\.setAttribute\('aria-valuenow', '480'\);/.test(html));
 
   // 7. Browser unlock and remaining debts
-  test('login asks for control:browser', html.includes("permissions: ['read:provenance', 'read:knowledge', 'control:browser']"));
+  test('login asks for control:browser and vault:manage', html.includes("permissions: ['read:provenance', 'read:knowledge', 'control:browser', 'vault:manage']"));
+  test('vault requests carry the capability and wait for Touch ID', (html.match(/headers: \{ 'Content-Type': 'application\/json', \.\.\.browserAuthHeaders\(\) \},\n\s+body: JSON\.stringify\(\{ (id: delId|name, secret, scope) \}\)\n\s+\}, false, VAULT_STEP_UP_TIMEOUT_MS\);/g) || []).length === 2);
+  test('the console never shows or keeps vault values', !html.includes('data-reveal-vault') && !html.includes("v.last4") && html.includes("vaultItems = vData.vault.map(v => ({ id: v.id, name: v.name, scope: v.scope || 'Global' }));"));
   test('navigate sends the capability headers', html.includes("headers: { 'Content-Type': 'application/json', ...browserAuthHeaders() }"));
   test('signing in or out reloads the visible panes', html.includes("if (typeof onBrowserAuthChanged === 'function') onBrowserAuthChanged(!!authenticated);") && /function onBrowserAuthChanged\(signedIn\) \{[\s\S]{0,400}refreshVisibleBrowserPanes\(\);/.test(html));
   test('swapping with an empty pane is refused instead of duplicating', /if \(!browserState \|\| !browserState2\) \{\s*showToast\('Both panes need a loaded page/.test(html));

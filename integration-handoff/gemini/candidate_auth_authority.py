@@ -6,5 +6,7 @@ class CandidateAuthAuthority:
         return False,403,"public_auth_not_configured",None
     def authenticate_operator_and_bootstrap_scope(self,**kwargs):
         return False,403,"public_auth_not_configured",None
+    def step_up(self,**kwargs):
+        return False,403,"public_auth_not_configured"
     def revoke_token(self,*args,**kwargs):
         raise RuntimeError("public_auth_not_configured")

@@ -26,6 +26,7 @@ Open http://127.0.0.1:8788 locally. Never bind a public network interface.
     node tests/test_browser_split.cjs
     python3 -B tests/test_gateway_browser.py
     python3 -B tests/test_gateway_screen.py
+    python3 -B tests/test_gateway_vault.py
     node tests/test_ego_bridge.mjs
     node tests/test_desktop_policy.cjs
 
@@ -64,6 +65,16 @@ keeps using the Ego Lite screen view above.
   iframes) only. Camera, microphone,
   location and notifications are refused.
 - A hidden pane is muted.
+
+## Vault & Keys (Touch ID)
+
+The hub's Vault & Keys tab stores secrets in the owner's macOS login Keychain
+(service `BRNESTRM-vault`). A Touch ID sign-in with `vault:manage` lists key
+names only; every save, replace or delete asks for a fresh local Touch ID
+approval that names the key. Values never reach the browser, never appear in a
+process argument list, and are stored with an empty trusted-application list,
+so reading one always asks the owner. The public DENY-ALL adapter keeps the
+vault closed.
 
 ## Chat history
 
