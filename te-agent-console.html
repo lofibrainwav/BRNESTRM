@@ -9064,6 +9064,8 @@
     // Ego Lite screen: the pane shows the session's real Ego Lite tab (the logged-in browser profile)
     // as live frames and forwards clicks, scrolling and typing to it. Needs control:browser.
 
+    const SCREEN_FRAME_GAP_MS = 15;   // pause between one frame and the next request of the same worker
+    const SCREEN_PIPELINE = 2;        // frame requests in flight per view
     function stopScreenView(pane) {
       const v = screenViews[pane];
       if (!v) return;
@@ -9129,57 +9131,71 @@
       view.append(img, input, status);
       vp.replaceChildren(view);
 
-      const v = { stopped: false, timer: null, inFlight: false, again: false, objectUrl: null, pageWidth: 0, pageHeight: 0, failures: 0, epoch: browserAuthEpoch, wheel: null, resizeObserver: null, send: null };
+      const v = { stopped: false, timer: null, workers: 0, reqSeq: 0, shownSeq: 0, objectUrl: null, pageWidth: 0, pageHeight: 0, failures: 0, epoch: browserAuthEpoch, wheel: null, resizeObserver: null, send: null };
       screenViews[pane] = v;
       const stillMine = () => !v.stopped && paneSessionId[pane] === sessionId && browserAuthEpoch === v.epoch && isBrowserOpen
         && (pane === 'p1' || isDualBrowser) && vp.contains(view);
       // Only ever stop this view; a newer view in the same pane is not ours to stop.
       const stopSelf = () => { if (screenViews[pane] === v) stopScreenView(pane); else v.stopped = true; };
       const fail = (code, err) => { stopSelf(); renderBrowserUnavailable(sessionId, code, { screenView: true, cause: err }, pane); };
-      // One polling loop per view: every reschedule replaces the single pending timer.
-      const schedule = ms => { clearTimeout(v.timer); v.timer = setTimeout(tick, ms); };
+      const nap = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-      async function tick() {
-        if (!stillMine()) { stopSelf(); return; }
-        if (v.inFlight) { v.again = true; return; }
-        if (document.hidden) { schedule(1000); return; }
-        v.inFlight = true;
-        let next = 350;
+      // Frames stream back to back with SCREEN_PIPELINE requests in flight. Measured on a playing
+      // video: one at a time ~5-8 frames/s, two ~10-18/s. A frame older than the one shown is dropped.
+      async function frameWorker() {
         try {
-          const res = await fetch(`http://127.0.0.1:8788/api/browser/screen?sessionId=${encodeURIComponent(sessionId)}`, { headers: browserAuthHeaders(), cache: 'no-store' });
-          if (!stillMine()) { stopSelf(); return; }
-          if (!res.ok) {
-            v.failures++;
-            if (res.status === 401 || res.status === 403 || res.status === 409 || v.failures >= 3) { fail(res.status); return; }
-            status.textContent = `Ego Lite · retrying (HTTP ${res.status})…`;
-            next = 1000;
-          } else {
-            v.failures = 0;
-            const blob = await res.blob();
-            if (!stillMine()) { stopSelf(); return; }
-            const url = URL.createObjectURL(blob);
-            img.src = url;
-            if (v.objectUrl) URL.revokeObjectURL(v.objectUrl);
-            v.objectUrl = url;
-            v.pageWidth = Number(res.headers.get('X-Page-Width')) || img.naturalWidth;
-            v.pageHeight = Number(res.headers.get('X-Page-Height')) || img.naturalHeight;
-            let pageUrl = '', pageTitle = '';
-            try { pageUrl = decodeURIComponent(res.headers.get('X-Page-Url') || ''); pageTitle = decodeURIComponent(res.headers.get('X-Page-Title') || ''); } catch (_) {}
-            v.pageUrl = pageUrl;
-            status.textContent = `Ego Lite · ${pageTitle || pageUrl || 'page'}`;
-            img.alt = `Ego Lite screen: ${pageTitle || pageUrl || 'page'}`;
-            if (pageUrl && focusedBrowserPane() === pane && browserUrlInput && !browserUrlDirty && document.activeElement !== browserUrlInput) browserUrlInput.value = pageUrl;
+          while (stillMine()) {
+            if (document.hidden) { await nap(1000); continue; }
+            const seq = ++v.reqSeq;
+            let wait = SCREEN_FRAME_GAP_MS;
+            try {
+              const res = await fetch(`http://127.0.0.1:8788/api/browser/screen?sessionId=${encodeURIComponent(sessionId)}`, { headers: browserAuthHeaders(), cache: 'no-store' });
+              if (!stillMine()) break;
+              if (!res.ok) {
+                v.failures++;
+                if (res.status === 401 || res.status === 403 || res.status === 409 || v.failures >= 3) { fail(res.status); break; }
+                status.textContent = `Ego Lite · retrying (HTTP ${res.status})…`;
+                wait = 1000;
+              } else {
+                const blob = await res.blob();
+                if (!stillMine()) break;
+                if (seq < v.shownSeq) continue;
+                const url = URL.createObjectURL(blob);
+                // Decode off-screen first, then swap, so a fast stream never flashes a blank frame.
+                const pre = new Image();
+                pre.src = url;
+                try { if (pre.decode) await pre.decode(); } catch (_) { /* swap anyway; the img reports its own error */ }
+                if (!stillMine() || seq < v.shownSeq) { URL.revokeObjectURL(url); if (!stillMine()) break; continue; }
+                v.shownSeq = seq;
+                v.failures = 0;
+                img.src = url;
+                if (v.objectUrl) URL.revokeObjectURL(v.objectUrl);
+                v.objectUrl = url;
+                v.pageWidth = Number(res.headers.get('X-Page-Width')) || img.naturalWidth;
+                v.pageHeight = Number(res.headers.get('X-Page-Height')) || img.naturalHeight;
+                let pageUrl = '', pageTitle = '';
+                try { pageUrl = decodeURIComponent(res.headers.get('X-Page-Url') || ''); pageTitle = decodeURIComponent(res.headers.get('X-Page-Title') || ''); } catch (_) {}
+                v.pageUrl = pageUrl;
+                status.textContent = `Ego Lite · ${pageTitle || pageUrl || 'page'}`;
+                img.alt = `Ego Lite screen: ${pageTitle || pageUrl || 'page'}`;
+                if (pageUrl && focusedBrowserPane() === pane && browserUrlInput && !browserUrlDirty && document.activeElement !== browserUrlInput) browserUrlInput.value = pageUrl;
+              }
+            } catch (e) {
+              v.failures++;
+              if (v.failures >= 3) { fail(0, e); break; }
+              status.textContent = 'Ego Lite · retrying…';
+              wait = 1000;
+            }
+            await nap(wait);
           }
-        } catch (e) {
-          v.failures++;
-          if (v.failures >= 3) { fail(0, e); return; }
-          status.textContent = 'Ego Lite · retrying…';
-          next = 1000;
         } finally {
-          v.inFlight = false;
+          v.workers--;
+          if (!v.stopped && !stillMine()) stopSelf();
         }
-        if (!v.stopped) schedule(v.again ? 60 : next);
-        v.again = false;
+      }
+      // A fixed number of workers per view; each exits on its own once the view is no longer current.
+      function startFrames() {
+        while (v.workers < SCREEN_PIPELINE && stillMine()) { v.workers++; frameWorker(); }
       }
 
       async function send(payload) {
@@ -9191,8 +9207,6 @@
             body: JSON.stringify({ sessionId, ...payload })
           });
         } catch (_) { /* the next frame shows whether it landed */ }
-        if (v.stopped) return;
-        if (v.inFlight) v.again = true; else schedule(60);
       }
       v.send = send;
 
@@ -9261,7 +9275,7 @@
         if (e.data) send({ type: 'type', text: e.data.slice(0, 2000) });
       });
       updateNavBtnStates();
-      tick();
+      startFrames();
     }
 
     function renderBrowserViewport() {

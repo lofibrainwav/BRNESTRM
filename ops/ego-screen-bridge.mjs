@@ -115,7 +115,7 @@ async function pageFor(session, create) {
 
 async function closePage(session) {
   const p = pages.get(session);
-  pages.delete(session); sizes.delete(session); queues.delete(session);
+  pages.delete(session); sizes.delete(session); queues.delete(session); metaCache.delete(session);
   if (p) await p.close().catch(() => {});
   return Boolean(p);
 }
@@ -177,6 +177,29 @@ async function info(p) {
   return { url: i.url, title: i.title, width: i.w, height: i.h };
 }
 
+// Page URL/title/size for frame headers, refreshed at most every META_TTL ms (frames come ~20/s).
+const META_TTL = 500;
+const metaCache = new Map();       // session id -> { at, meta }
+async function frameMeta(session, p) {
+  const c = metaCache.get(session);
+  if (c && Date.now() - c.at < META_TTL) return c.meta;
+  const meta = await info(p);
+  metaCache.set(session, { at: Date.now(), meta });
+  return meta;
+}
+
+// One JPEG straight from the renderer (~25/s measured on a YouTube watch page). page.screenshot()
+// writes a PNG file and managed about 1/s, which made video and streaming text look frozen.
+async function captureFrame(p, file) {
+  try {
+    const shot = await p.cdp('Page.captureScreenshot', { format: 'jpeg', quality: 70, optimizeForSpeed: true });
+    if (shot && typeof shot.data === 'string' && shot.data) return { type: 'image/jpeg', data: Buffer.from(shot.data, 'base64') };
+  } catch (_) { /* fall back to the slower PNG path */ }
+  await p.screenshot({ path: file });
+  const data = fs.readFileSync(file); fs.unlinkSync(file);
+  return { type: 'image/png', data };
+}
+
 function send(res, code, obj) {
   const body = Buffer.from(JSON.stringify(obj));
   res.writeHead(code, { 'Content-Type': 'application/json', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
@@ -202,12 +225,9 @@ const server = http.createServer(async (req, res) => {
       const p = await pageFor(session, false);
       if (!p) return send(res, 404, { ok: false, error: 'no_page' });
       const file = path.join(shotDir, `f${++shotSeq}.png`);
-      const [png, meta] = await serial(session, async () => {
-        await p.screenshot({ path: file });
-        const data = fs.readFileSync(file); fs.unlinkSync(file);
-        return [data, await info(p)];
-      });
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': 'no-store',
+      const [frame, meta] = await serial(session, async () => [await captureFrame(p, file), await frameMeta(session, p)]);
+      const png = frame.data;
+      res.writeHead(200, { 'Content-Type': frame.type, 'Content-Length': png.length, 'Cache-Control': 'no-store',
         'X-Page-Width': String(meta.width), 'X-Page-Height': String(meta.height),
         'X-Page-Url': headerText(meta.url), 'X-Page-Title': headerText(meta.title) });
       return res.end(png);
@@ -217,6 +237,7 @@ const server = http.createServer(async (req, res) => {
       if (!SESSION_RE.test(String(b.session || ''))) return send(res, 400, { ok: false, error: 'bad_session' });
       if (typeof b.url !== 'string' || !/^https?:\/\//i.test(b.url) || b.url.length > 2048) return send(res, 400, { ok: false, error: 'bad_url' });
       const p = await pageFor(b.session, true);
+      metaCache.delete(b.session);
       const meta = await serial(b.session, async () => {
         try { await p.goto(b.url, { timeout: 15000, waitUntil: 'domcontentloaded' }); } catch (_) { /* slow SPA: keep what committed */ }
         return info(p);
@@ -239,6 +260,7 @@ const server = http.createServer(async (req, res) => {
       const p = await pageFor(b.session, false);
       if (!p && b.type === 'viewport') return send(res, 200, { ok: true, pending: true });
       if (!p) return send(res, 404, { ok: false, error: 'no_page' });
+      metaCache.delete(b.session);
       await serial(b.session, async () => {
         if (b.type === 'viewport') return fitViewport(p, sizes.get(b.session));
         if (b.type === 'click') await p.mouse.click(b.x, b.y, { button: b.button || 'left' });

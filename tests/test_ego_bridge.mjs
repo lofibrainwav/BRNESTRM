@@ -22,6 +22,8 @@ globalThis.__BRNESTRM_BRIDGE__ = { port, secretFile: path.join(tmp, 'secret'), p
 const calls = [];
 let closed = 0;
 let newPages = 0;
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 0xff, 0xd9]);
+let jpegCapture = false;           // off: the PNG fallback path; on: CDP JPEG capture
 const hang = new Set();          // page numbers whose screenshot never finishes
 let titleFor = n => 'T' + n;
 function fakePage(n) {
@@ -29,11 +31,12 @@ function fakePage(n) {
   newPages++;
   return {
     async goto(u) { calls.push(['goto', n, u]); url = u; },
-    async info() { return { url, title: titleFor(n), w: 1280, h: 720 }; },
+    async info() { calls.push(['info', n]); return { url, title: titleFor(n), w: 1280, h: 720 }; },
     async screenshot({ path: p }) { if (hang.has(n)) await new Promise(() => {}); fs.writeFileSync(p, PNG); return p; },
     async close() { closed++; },
     async evaluate(s) { calls.push(['eval', n, s]); },
     async cdp(m, a) {
+      if (m === 'Page.captureScreenshot') { if (hang.has(n)) await new Promise(() => {}); calls.push(['jpeg', n, a.format, a.quality]); return jpegCapture ? { data: JPEG.toString('base64') } : {}; }
       if (m === 'Page.getNavigationHistory') return { currentIndex: 1, entries: [{ id: 11, url: 'https://a.example/' }, { id: 12, url }] };
       if (m === 'Page.navigateToHistoryEntry') { calls.push(['history', n, a.entryId]); return {}; }
       if (m === 'Page.handleJavaScriptDialog') { calls.push(['dialog', n, a.accept]); return {}; }
@@ -90,6 +93,10 @@ const g = await call('POST', '/goto', { body: { session: 'sess-1', url: 'https:/
 test('goto opens the page and reports its size', g.code === 200 && j(g).width === 1280 && calls.some(c => c[0] === 'goto' && c[2] === 'https://example.org/'));
 const f = await call('GET', '/frame?session=sess-1');
 test('frame returns a PNG with the page size', f.code === 200 && f.headers['content-type'] === 'image/png' && f.body.subarray(1, 4).toString() === 'PNG' && f.headers['x-page-width'] === '1280' && f.headers['cache-control'] === 'no-store');
+jpegCapture = true;
+const jf = await call('GET', '/frame?session=sess-1');
+test('frames are JPEG straight from the renderer', jf.code === 200 && jf.headers['content-type'] === 'image/jpeg' && jf.body.equals(JPEG) && calls.some(c => c[0] === 'jpeg' && c[2] === 'jpeg'));
+jpegCapture = false;
 test('click is forwarded in CSS pixels', (await call('POST', '/input', { body: { session: 'sess-1', type: 'click', x: 10, y: 20 } })).code === 200 && calls.some(c => c[0] === 'click' && c[2] === 10 && c[3] === 20 && c[4] === 'left'));
 test('wheel is one wheel event at the pointer', (await call('POST', '/input', { body: { session: 'sess-1', type: 'wheel', x: 5, y: 5, dx: 0, dy: 300 } })).code === 200 && calls.some(c => c[0] === 'wheel' && c[2] === 'mouseWheel' && c[3] === 300 && c[4] === 5));
 test('typed text is inserted', (await call('POST', '/input', { body: { session: 'sess-1', type: 'type', text: '안녕 hello' } })).code === 200 && calls.some(c => c[0] === 'text' && c[2] === '안녕 hello'));

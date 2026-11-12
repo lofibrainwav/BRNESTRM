@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS = []
+JPEG = bytes([0xff, 0xd8, 0xff, 0xe0, 0, 16]) + b'JFIF\x00\x01\xff\xd9'
 PNG = bytes.fromhex('89504e470d0a1a0a0000000d4948445200000001000000010806000000'
                     '1f15c4890000000d49444154789c63f8cfc0f00f0003860180583a4f6b0000000049454e44ae426082')
 
@@ -31,6 +32,7 @@ class FakeAuthority:
 class Bridge(BaseHTTPRequestHandler):
     log = []
     pages = set()
+    frame_kind = 'png'
 
     def _send(self, code, body, ctype='application/json', extra=None):
         self.send_response(code)
@@ -53,7 +55,8 @@ class Bridge(BaseHTTPRequestHandler):
             sess = self.path.split('session=')[-1]
             if sess not in Bridge.pages:
                 return self._send(404, b'{"ok":false,"error":"no_page"}')
-            return self._send(200, PNG, 'image/png', {'X-Page-Width': '1280', 'X-Page-Height': '720', 'X-Page-Url': 'https%3A%2F%2Fexample.org%2F'})
+            body = {'png': PNG, 'jpeg': JPEG, 'html': b'<html>x</html>'}[Bridge.frame_kind]
+            return self._send(200, body, 'image/png', {'X-Page-Width': '1280', 'X-Page-Height': '720', 'X-Page-Url': 'https%3A%2F%2Fexample.org%2F'})
         return self._send(404, b'{}')
 
     def do_POST(self):
@@ -141,6 +144,13 @@ def main():
 
         code, headers, body = call('GET', '/api/browser/screen?sessionId=sess-1', token='good')
         check('the screen is proxied as a PNG with the page size', code == 200 and body == PNG and headers.get('Content-Type') == 'image/png' and headers.get('X-Page-Width') == '1280' and headers.get('Cache-Control') == 'no-store')
+        Bridge.frame_kind = 'jpeg'
+        code, headers, body = call('GET', '/api/browser/screen?sessionId=sess-1', token='good')
+        check('JPEG frames pass through as image/jpeg', code == 200 and body == JPEG and headers.get('Content-Type') == 'image/jpeg')
+        Bridge.frame_kind = 'html'
+        code, _, _ = call('GET', '/api/browser/screen?sessionId=sess-1', token='good')
+        check('a frame that is not an image is refused', code == 502)
+        Bridge.frame_kind = 'png'
         code, _, body = call('GET', '/api/browser/screen?sessionId=sess-2', token='good')
         check('a session with a page in its state but none in Ego is opened on demand', code == 200 and body == PNG and 'sess-2' in Bridge.pages)
         code, _, body = call('GET', '/api/browser/screen?sessionId=sess-ledger', token='good')
