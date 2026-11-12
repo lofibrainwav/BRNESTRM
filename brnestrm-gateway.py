@@ -22,6 +22,7 @@ Security:
   - Secrets are never returned by any endpoint; only the last 4 characters.
 """
 import base64
+from datetime import datetime
 import hashlib
 import fcntl
 import errno
@@ -1347,6 +1348,87 @@ def public_vault(items, check=False):
              "store": "macOS Keychain", **({"present": _vault_exists(i["name"])} if check else {})} for i in items]
 
 
+# ---- Standing grants (Kingdom 7-day DELEGATE_WORK pointers) ------------------------------
+# Kingdom records which signed grant each repo should try before sending a passkey link
+# (kingdom docs/decisions/standing-grant-routing-2026-11-11.md). The files are pointers, not
+# authority. The vault lists them and can turn routing off for a repo (behind Touch ID), which
+# stops automatic use at once; revoking the grant itself stays in Kingdom's ledger.
+KINGDOM_STATE = os.environ.get("BRNESTRM_KINGDOM_STATE", os.path.join(os.path.expanduser("~"), ".kingdom", "state"))
+GRANT_REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _grant_slug(repo):
+    if not isinstance(repo, str) or not GRANT_REPO_RE.fullmatch(repo):
+        return None
+    owner, name = repo.split("/")
+    if re.fullmatch(r"\.+", owner) or re.fullmatch(r"\.+", name):
+        return None
+    return f"{owner}__{name}"
+
+
+def list_standing_grants(now=None):
+    """Routing pointers per repo (kingdom-delegation-pointer/v2). Whether a grant was signed and adopted is
+    only known to Kingdom's ledger, so each entry is reported as unconfirmed here."""
+    now = now or time.time()
+    d = os.path.join(KINGDOM_STATE, "delegations")
+    out = []
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        names = []
+    for n in names:
+        path = os.path.join(d, n)
+        if not n.endswith(".ref") or os.path.islink(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                ids = [l.strip() for l in f if UUID_RE.fullmatch(l.strip())]
+        except OSError:
+            continue
+        if not ids:
+            continue
+        meta = {}
+        try:
+            with open(os.path.join(d, n[:-4] + ".json"), "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            pass
+        repo = meta.get("repo") if isinstance(meta.get("repo"), str) else n[:-4].replace("__", "/", 1)
+        if _grant_slug(repo) != n[:-4]:
+            continue
+        grants = [g for g in meta.get("grants", []) if isinstance(g, dict) and g.get("delegation_id") in ids]
+        newest = grants[0] if grants else {}
+        upper = newest.get("expires_at_upper_bound")
+        try:
+            remaining = max(0, int((datetime.fromisoformat(str(upper).replace("Z", "+00:00")).timestamp() - now) // 60))
+        except (TypeError, ValueError):
+            remaining = None
+        paths = newest.get("paths") if isinstance(newest.get("paths"), list) else []
+        out.append({"repo": repo, "ref": ids[0][:8], "count": len(ids), "days": newest.get("days"), "paths": len(paths),
+                    "issued_at": newest.get("issued_at"), "expires_at_upper_bound": upper,
+                    "remaining_minutes": remaining, "expired": remaining == 0, "state": "UNCONFIRMED"})
+    return out
+
+
+def remove_standing_grant(repo):
+    """Turn routing off for one repo by removing its pointer files (not the bb sync pointer, not the grant)."""
+    slug = _grant_slug(repo)
+    if not slug:
+        return False
+    d = os.path.join(KINGDOM_STATE, "delegations")
+    removed = False
+    for path in (os.path.join(d, slug + ".ref"), os.path.join(d, slug + ".json")):
+        try:
+            if os.path.islink(path):
+                return False
+            os.unlink(path)
+            removed = True
+        except FileNotFoundError:
+            pass
+    return removed
+
+
 def require_step_up(headers, action, peer_port):
     """Capability (vault:manage or the given permission) plus a fresh owner approval for one action."""
     auth_header = headers.get("Authorization", "") if headers else ""
@@ -1636,6 +1718,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(status_code, {"ok": False, "error": err_msg})
         if p == "/api/providers":
             return self._json(200, providers())
+        if p == "/api/vault/grants":
+            ok_auth, status_code, err_msg, _ = check_authenticated_capability(
+                self.headers, required_scope=BROWSER_SCOPE, required_permission=VAULT_PERMISSION)
+            if not ok_auth:
+                return self._json(status_code, {"ok": False, "error": err_msg})
+            return self._json(200, {"ok": True, "grants": list_standing_grants()})
         if p == "/api/vault":
             ok_auth, status_code, err_msg, _ = check_authenticated_capability(
                 self.headers, required_scope=BROWSER_SCOPE, required_permission=VAULT_PERMISSION)
@@ -2071,6 +2159,29 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json(500, {"ok": False, "error": f"internal_error: logout failed: {str(e)}"})
 
+        if p == "/api/vault/grants/remove":
+            ok_orig, orig_code, orig_msg, _ = extract_and_verify_request_origin(self.headers, is_mutating=True)
+            if not ok_orig:
+                return self._json(orig_code, {"ok": False, "error": orig_msg})
+            ok_auth, status_code, err_msg, auth_payload = check_authenticated_capability(
+                self.headers, required_scope=BROWSER_SCOPE, required_permission=VAULT_PERMISSION)
+            if not ok_auth:
+                return self._json(status_code, {"ok": False, "error": err_msg})
+            repo = body.get("repo") if isinstance(body, dict) else None
+            if not _grant_slug(repo):
+                return self._json(400, {"ok": False, "error": "bad_request: repo must be owner/name"})
+            if not any(g["repo"] == repo for g in list_standing_grants()):
+                return self._json(404, {"ok": False, "error": "not_found"})
+            ok_up, up_code, up_msg = require_step_up(self.headers, f"grant remove {repo}", self.client_address[1])
+            if not ok_up:
+                return self._json(up_code if up_code in (400, 401, 403, 408, 409, 429, 503) else 403,
+                                  {"ok": False, "error": up_msg})
+            if not remove_standing_grant(repo):
+                return self._json(409, {"ok": False, "error": "pointer_not_removed"})
+            sub = auth_payload.get("sub", "unknown") if auth_payload else "unknown"
+            append_sillok_record(prompt=f"STANDING_GRANT_REMOVE repo={repo}", target="vault.grant_remove",
+                                 reply=f"principal={sub},pointer_removed", synthesis="SUCCESS")
+            return self._json(200, {"ok": True, "grants": list_standing_grants()})
         if p in ("/api/vault/add", "/api/vault/delete"):
             ok_orig, orig_code, orig_msg, _ = extract_and_verify_request_origin(self.headers, is_mutating=True)
             if not ok_orig:
