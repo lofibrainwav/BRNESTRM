@@ -3,6 +3,9 @@
 # BRNESTRM_CONSOLE_URL overrides the console address (loopback only; default http://127.0.0.1:8788/).
 set -euo pipefail
 cd "$(dirname "$0")"
+# Apps opened from Finder get a minimal PATH without Homebrew; node and npm live there.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+command -v node >/dev/null || { echo "BRNESTRM desktop: node not found (install Node.js)" >&2; exit 1; }
 BIN=node_modules/electron/dist/Electron.app/Contents/MacOS/Electron
 [ -d node_modules/electron ] || npm ci --no-audit --no-fund
 # Some npm setups skip install scripts, so fetch the pinned Electron binary explicitly when missing.
