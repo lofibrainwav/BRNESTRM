@@ -18,14 +18,22 @@ function originOf(url) {
   try { return new URL(url).origin; } catch { return null; }
 }
 
-// A page the browser pane may open: http(s), at most 2048 characters, never the console itself.
-function siteUrlAllowed(url, consoleOrigin) {
-  if (typeof url !== 'string' || url.length > 2048) return false;
+// Where a page inside a view may go: http(s), never the console or the bridge. No length cap:
+// sign-in redirect chains (Google CheckCookie/SetSID, OAuth) routinely exceed 2048 characters,
+// and refusing them left the owner signed in but stuck after 2-step verification.
+function siteNavigationAllowed(url, consoleOrigin) {
+  if (typeof url !== 'string' || url.length > 2 * 1024 * 1024) return false;
   let u;
   try { u = new URL(url); } catch { return false; }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
   if (u.username || u.password) return false;
   return u.origin !== consoleOrigin && !isProtectedLocal(u);
+}
+
+// An address the console asks a pane to open (typed or from the gateway): the same rules plus
+// the console's own 2048-character limit.
+function siteUrlAllowed(url, consoleOrigin) {
+  return typeof url === 'string' && url.length <= 2048 && siteNavigationAllowed(url, consoleOrigin);
 }
 
 function isLoopbackHost(hostname) {
@@ -79,7 +87,7 @@ function clampRect(rect, winW, winH) {
 // window.open() with features (sign-in popups) gets a real child window in the same login
 // partition; links that would open a tab stay in the pane; anything not http(s) is refused.
 function popupDecision(url, disposition, consoleOrigin, fromPopup = false) {
-  if (!siteUrlAllowed(url, consoleOrigin)) return 'deny';
+  if (!siteNavigationAllowed(url, consoleOrigin)) return 'deny';
   if (fromPopup) return 'same-view';           // a pop-up never opens further windows
   const host = new URL(url).hostname;
   return disposition === 'new-window' && SIGN_IN_HOSTS.has(host) ? 'window' : 'same-view';
@@ -89,4 +97,4 @@ function permissionAllowed(permission) {
   return ALLOWED_PERMISSIONS.has(permission);
 }
 
-module.exports = { siteUrlAllowed, frameUrlAllowed, publicPageUrl, senderAllowed, paneAllowed, clampRect, popupDecision, permissionAllowed, originOf, isLoopbackHost };
+module.exports = { siteUrlAllowed, siteNavigationAllowed, frameUrlAllowed, publicPageUrl, senderAllowed, paneAllowed, clampRect, popupDecision, permissionAllowed, originOf, isLoopbackHost };
