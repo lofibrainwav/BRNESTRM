@@ -235,6 +235,32 @@ function makeEnv(responses, opts = {}) {
   test('web frames refuse the console origin and non-http URLs', frameCtx.isSafeFrameUrl('https://example.org/') && !frameCtx.isSafeFrameUrl('http://127.0.0.1:8788/api/vault') && !frameCtx.isSafeFrameUrl('/api/vault') && !frameCtx.isSafeFrameUrl('javascript:alert(1)') && !frameCtx.isSafeFrameUrl('data:text/html,x'));
   test('both web panes check the frame URL before rendering', (html.match(/\} else if \(!isSafeFrameUrl\(browserState2?\.url\)\) \{/g) || []).length === 2);
 
+  // 8. Ego Lite screen view
+  const scrCtx = {}; vm.createContext(scrCtx);
+  vm.runInContext(extract('    function screenPoint(', '\n    }\n') + '\n    }', scrCtx);
+  const rect = { left: 100, top: 50, width: 800, height: 600 };
+  const mid = scrCtx.screenPoint(rect, 1600, 900, 100 + 400, 50 + 300);
+  test('screen clicks map through the top-aligned frame to page pixels', mid && mid.x === 800 && mid.y === 600 && scrCtx.screenPoint(rect, 1600, 900, 100 + 400, 50 + 460) === null);
+  const same = scrCtx.screenPoint(rect, 800, 600, 100 + 10, 50 + 20);
+  test('a pane-sized page maps 1:1', same && same.x === 10 && same.y === 20);
+  test('the Ego page is laid out at the pane size and follows resizes', html.includes("send({ type: 'viewport', width, height });") && html.includes('ro.observe(img);') && html.includes('if (v.resizeObserver) v.resizeObserver.disconnect();') && html.includes('object-position: center top;'));
+  vm.runInContext("const SCREEN_NAMED_KEYS = ['Enter','Backspace','Tab','Escape','Delete','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageUp','PageDown'];" + extract('    function screenKey(e) {', '\n    }\n') + '\n    }', scrCtx);
+  const k = o => scrCtx.screenKey(Object.assign({ key: '', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, isComposing: false, keyCode: 0 }, o));
+  test('screen keys: named keys and chords are pressed, plain text and IME go through input', k({ key: 'Enter' }) === 'Enter' && k({ key: 'Tab', shiftKey: true }) === 'Shift+Tab' && k({ key: 'a', metaKey: true }) === 'Meta+a' && k({ key: 'z', metaKey: true, shiftKey: true }) === 'Meta+Shift+z' && k({ key: 'a' }) === null && k({ key: 'Process', keyCode: 229 }) === null && k({ key: 'Enter', isComposing: true }) === null);
+  test('screen frames and input carry the capability headers', html.includes("api/browser/screen?sessionId=${encodeURIComponent(sessionId)}`, { headers: browserAuthHeaders(), cache: 'no-store' })") && html.includes("headers: { 'Content-Type': 'application/json', ...browserAuthHeaders() },\n            body: JSON.stringify({ sessionId, ...payload })"));
+  test('a screen view stops when its pane, sign-in, dual mode or visibility changes', html.includes('const stillMine = () => !v.stopped && paneSessionId[pane] === sessionId && browserAuthEpoch === v.epoch && isBrowserOpen\n        && (pane === \'p1\' || isDualBrowser) && vp.contains(view);'));
+  test('an old view never stops the newer view in its pane', html.includes('const stopSelf = () => { if (screenViews[pane] === v) stopScreenView(pane); else v.stopped = true; };') && !/async function tick\(\) \{\n\s+if \(!stillMine\(\)\) \{ stopScreenView\(pane\)/.test(html));
+  test('one polling loop per view (single timer, one request in flight)', html.includes('const schedule = ms => { clearTimeout(v.timer); v.timer = setTimeout(tick, ms); };') && html.includes('if (v.inFlight) { v.again = true; return; }'));
+  test('leaving dual mode stops the hidden pane screen', /stopScreenView\('p2'\);\n\s+setActiveFocusedPane\('top'\);/.test(html));
+  test('frames do not overwrite an address being typed', html.includes("browserUrlInput?.addEventListener('input', () => { browserUrlDirty = true; });") && html.includes('!browserUrlDirty && document.activeElement !== browserUrlInput'));
+  test('back/forward/reload drive the Ego tab in a screen view', ['back', 'forward', 'reload'].every(t => html.includes(`if (screenNav('${t}')) return;`)));
+  test('Control+Escape releases the keyboard; the frame is focusable', html.includes("if (e.key === 'Escape' && (e.ctrlKey || e.metaKey))") && html.includes('img.tabIndex = 0;'));
+  test('paste sends the console clipboard text', html.includes("input.addEventListener('paste', e => {"));
+  test('screen failures name the Ego Lite screen', html.includes("screen: ['Ego Lite screen unavailable',") && html.includes("if (err && err.screenView) return 'screen';"));
+  test('Korean IME text is sent whole on compositionend', html.includes("input.addEventListener('compositionend', e => {"));
+  test('both panes use the screen view when the gateway reports one', (html.match(/if \(browserState2?\.screen && browserState2?\.kind !== 'ledger'\) \{ renderScreenView\('p[12]'\); return; \}/g) || []).length === 2);
+  test('frame object URLs are revoked', html.includes('if (v.objectUrl) URL.revokeObjectURL(v.objectUrl);'));
+
   // Honest copy elsewhere in the pane
   test('the ChatGPT card no longer claims an authenticated session', !html.includes('is active and authenticated'));
 

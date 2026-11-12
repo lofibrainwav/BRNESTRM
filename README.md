@@ -25,6 +25,24 @@ Open http://127.0.0.1:8788 locally. Never bind a public network interface.
     node tests/test_console_reliability.cjs
     node tests/test_browser_split.cjs
     python3 -B tests/test_gateway_browser.py
+    python3 -B tests/test_gateway_screen.py
+    node tests/test_ego_bridge.mjs
+
+## Optional Ego Lite screen (signed-in browser in the pane)
+
+Sites such as Google and YouTube refuse to load inside an iframe. With Ego
+Lite installed, `ops/run-ego-screen-bridge.sh` starts a loopback-only bridge
+(127.0.0.1:8794) inside Ego Lite's embedded runtime. The browser pane then
+shows that Ego Lite profile's real tab as live frames and forwards clicks,
+scrolling and typing to it, so the profile's existing sign-ins apply.
+
+- The bridge needs a shared secret file (created 0600 on first start at
+  `~/.brnestrm/ego-bridge.secret`) and refuses any request with an Origin header.
+- The gateway proxies it behind the `control:browser` capability; the public
+  DENY-ALL adapter keeps it closed.
+- It never reads cookies, storage or saved passwords. Settings:
+  `BRNESTRM_EGO_BRIDGE_PORT`, `BRNESTRM_EGO_BRIDGE_SECRET_FILE`,
+  `BRNESTRM_EGO_PROFILE` (default `Profile 1`). `--restart` reloads it.
 
 ## Chat history
 
