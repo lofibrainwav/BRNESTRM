@@ -372,7 +372,9 @@ async function runReliabilityTests() {
     pStates.ledger.status = 'IDLE';
     pStates.vault.status = 'IDLE';
 
-    // Vault fails with 403
+    // Signed in (vault:manage token), the vault request fails with 403
+    const realAuthHeaders = sandbox.browserAuthHeaders;
+    sandbox.browserAuthHeaders = () => ({ Authorization: 'Bearer test', 'X-Session-ID': 'sess-test' });
     sandbox.fetch = async () => ({
       ok: false,
       status: 403,
@@ -386,6 +388,13 @@ async function runReliabilityTests() {
     assert.strictEqual(pStates.ecosystem.status, 'SUCCESS');
     // Ledger remains IDLE
     assert.strictEqual(pStates.ledger.status, 'IDLE');
+    // Signed out, the vault makes no request at all and shows as locked
+    sandbox.browserAuthHeaders = () => ({});
+    let calls = 0;
+    sandbox.fetch = async () => { calls++; return { ok: false, status: 403, json: async () => ({}) }; };
+    await sandbox.syncVault(false);
+    assert.strictEqual(calls, 0, 'no vault request without a Touch ID sign-in');
+    sandbox.browserAuthHeaders = realAuthHeaders;
   });
 
   await asyncTest('Mutation safety: POST request never retries automatically on failure (prevents double mutations)', async () => {

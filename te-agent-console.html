@@ -6760,11 +6760,23 @@
     // =========================================================================
     // 5. VAULT & WALLET HUB + LESSONS LEARNED LEDGER
     // =========================================================================
+    // Saving or deleting waits for a Touch ID prompt (60 s) or a remote passkey approval.
+    const VAULT_STEP_UP_TIMEOUT_MS = 90000;
+    // Plain words for the step-up refusals the gateway can return.
+    const VAULT_STEP_UP_MESSAGES = {
+      owner_not_present: '맥 앞에서 Touch ID로만 저장·삭제할 수 있어요.',
+      touchid_denied: 'Touch ID가 취소되어 아무것도 바뀌지 않았어요.',
+      touchid_timeout: 'Touch ID 시간이 지나 아무것도 바뀌지 않았어요.',
+      step_up_backoff: '방금 취소되어 10초 뒤에 다시 시도할 수 있어요.',
+      prompt_busy: '다른 Touch ID 확인이 진행 중이에요.',
+    };
+    const vaultErrorText = err => VAULT_STEP_UP_MESSAGES[err && err.message] || (err && err.message) || 'error';
     function renderVaultList() {
       const container = document.getElementById('vaultListContainer');
       document.getElementById('vaultCountBadge').textContent = String(vaultItems.length);
       container.innerHTML = vaultItems.map(v => {
-        const masked = v.revealed ? v.secret : v.secret.slice(0, 7) + '••••••' + v.secret.slice(-4);
+        // Values stay in the macOS Keychain; the console only ever sees names.
+        const masked = 'Stored in macOS Keychain · Touch ID to change';
         return `
           <div class="vault-row">
             <div class="vault-row-left">
@@ -6776,8 +6788,7 @@
               <span class="vault-secret-val">${escapeHtml(masked)}</span>
             </div>
             <div class="vault-row-actions">
-              <button type="button" class="btn-small" data-reveal-vault="${v.id}">${v.revealed ? 'Hide' : 'Reveal'}</button>
-              <button type="button" class="mini-icon-btn danger" data-del-vault="${v.id}" aria-label="Delete Vault Key">
+              <button type="button" class="mini-icon-btn danger" data-del-vault="${escapeHtml(v.id)}" aria-label="Delete Vault Key">
                 <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
               </button>
             </div>
@@ -6785,16 +6796,6 @@
         `;
       }).join('');
 
-      container.querySelectorAll('[data-reveal-vault]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const item = vaultItems.find(x => x.id === btn.getAttribute('data-reveal-vault'));
-          if (item) {
-            item.revealed = !item.revealed;
-            renderVaultList();
-          }
-        });
-      });
 
       container.querySelectorAll('[data-del-vault]').forEach(btn => {
         btn.addEventListener('click', async (e) => {
@@ -6807,11 +6808,12 @@
 
           try {
             // Mutation: safeFetch with allowAutoRetry=false (strictly NO automatic retries!)
+            showToast('Touch ID로 삭제를 확인해 주세요.', 'info', { dedupKey: 'vault-touchid' });
             const res = await safeFetch('http://127.0.0.1:8788/api/vault/delete', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...browserAuthHeaders() },
               body: JSON.stringify({ id: delId })
-            }, false, 6000);
+            }, false, VAULT_STEP_UP_TIMEOUT_MS);
 
             const d = await res.json();
             if (res.ok && d.ok) {
@@ -6826,7 +6828,7 @@
             const classified = classifyHttpError(err.status, err);
             // DO NOT delete from UI if server failed or blocked
             renderVaultList();
-            showToast(`Vault 삭제 실패 [${classified.label}]: ${err.message}`, 'error', { dedupKey: `vault-del-err-${delId}` });
+            showToast(`Vault 삭제 실패 [${classified.label}]: ${vaultErrorText(err)}`, 'error', { dedupKey: `vault-del-err-${delId}` });
           }
         });
       });
@@ -6851,22 +6853,16 @@
 
       try {
         // Mutation: safeFetch with allowAutoRetry=false (strictly NO automatic retries!)
+        showToast('Touch ID로 저장을 확인해 주세요.', 'info', { dedupKey: 'vault-touchid' });
         const res = await safeFetch('http://127.0.0.1:8788/api/vault/add', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, secret, scope, autoInject: true })
-        }, false, 6000);
+          headers: { 'Content-Type': 'application/json', ...browserAuthHeaders() },
+          body: JSON.stringify({ name, secret, scope })
+        }, false, VAULT_STEP_UP_TIMEOUT_MS);
 
         const d = await res.json();
         if (d.ok && Array.isArray(d.vault)) {
-          vaultItems = d.vault.map(v => ({
-            id: v.id,
-            name: v.name,
-            secret: '••••••••' + (v.last4 || ''),
-            scope: v.scope || 'Global',
-            revealed: false,
-            autoInject: true
-          }));
+          vaultItems = d.vault.map(v => ({ id: v.id, name: v.name, scope: v.scope || 'Global' }));
           renderVaultList();
           showToast(`Key "${name}" saved to macOS Keychain.`, 'success');
           return;
@@ -6876,7 +6872,7 @@
         const classified = classifyHttpError(err.status, err);
         // DO NOT generate fake entries via unshift()!
         // DO NOT retain failed secret in browser internal list!
-        showToast(`Vault 저장 실패 [${classified.label}]: ${err.message}`, 'error', { dedupKey: `vault-add-err-${err.message}` });
+        showToast(`Vault 저장 실패 [${classified.label}]: ${vaultErrorText(err)}`, 'error', { dedupKey: `vault-add-err-${err.message}` });
       } finally {
         if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save'; }
       }
@@ -7633,7 +7629,7 @@
       try {
         const payload = {
           scope: currentAuthScope,
-          permissions: ['read:provenance', 'read:knowledge', 'control:browser'],
+          permissions: ['read:provenance', 'read:knowledge', 'control:browser', 'vault:manage'],
           intent: 'Operator console session authorization',
           sessionId: currentAuthSessionId,
           simulated_outcome: simulatedOutcome
@@ -8229,8 +8225,15 @@
       const statusBadge = document.getElementById('vaultStatusBadge');
 
       try {
-        // Vault read probe
-        const vRes = await safeFetch('http://127.0.0.1:8788/api/vault', { method: 'GET' }, false, 4000);
+        // The vault needs a Touch ID sign-in (vault:manage); signed out it simply shows as locked.
+        if (!browserAuthHeaders().Authorization) {
+          vaultItems = [];
+          renderVaultList();
+          if (statusBadge) statusBadge.textContent = 'Locked · sign in with Touch ID';
+          if (countBadge) countBadge.textContent = '🔒';
+          return;
+        }
+        const vRes = await safeFetch('http://127.0.0.1:8788/api/vault', { method: 'GET', headers: browserAuthHeaders() }, false, 4000);
         const vData = await vRes.json();
 
         p.status = 'SUCCESS';
@@ -8240,14 +8243,7 @@
         p.data = vData;
 
         if (vData.vault && Array.isArray(vData.vault)) {
-          vaultItems = vData.vault.map(v => ({
-            id: v.id,
-            name: v.name,
-            secret: '••••••••' + (v.last4 || ''),
-            scope: v.scope || 'Global',
-            revealed: false,
-            autoInject: v.autoInject ?? true
-          }));
+          vaultItems = vData.vault.map(v => ({ id: v.id, name: v.name, scope: v.scope || 'Global' }));
           renderVaultList();
         }
         if (statusBadge) statusBadge.textContent = `Key Store (${formatObservedTime(p.lastSuccessTime)})`;
@@ -8637,6 +8633,7 @@
           if (browserUrlInput) browserUrlInput.value = '';
         }
         refreshVisibleBrowserPanes();
+        if (typeof syncVault === 'function') syncVault();
       } catch (_) {
         // Called before the browser module finished initialising; nothing to refresh yet.
       }
