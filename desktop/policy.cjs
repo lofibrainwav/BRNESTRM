@@ -12,7 +12,9 @@ const SIGN_IN_HOSTS = new Set(['accounts.google.com', 'accounts.youtube.com', 'a
 const BLOCKED_FRAME_SCHEMES = new Set(['file:', 'chrome:', 'chrome-extension:', 'devtools:', 'javascript:', 'view-source:']);
 const SECRET_PARAM = /(token|code|secret|session|auth|key|password|sig)/i;
 // Site views may ask for these and nothing else (no camera, microphone, location, notifications…).
-const ALLOWED_PERMISSIONS = new Set(['fullscreen', 'clipboard-sanitized-write']);
+// storage-access lets a sign-in iframe (accounts.youtube.com inside accounts.google.com) use its
+// own cookies, as Chrome allows by default; refusing it can stop the sign-in from completing.
+const ALLOWED_PERMISSIONS = new Set(['fullscreen', 'clipboard-sanitized-write', 'storage-access', 'top-level-storage-access']);
 
 function originOf(url) {
   try { return new URL(url).origin; } catch { return null; }
