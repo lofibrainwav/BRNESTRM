@@ -4729,6 +4729,47 @@
     html[data-resolved="dark"] .tab-count { color: var(--polo-brass); }
     html[data-resolved="dark"] .frame-meta { color: #8DB3A2; }
 
+    /* Ego Lite screen view inside the browser pane. */
+    .screen-view {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: #0a0d14;
+    }
+    .screen-view:focus-within { box-shadow: inset 0 0 0 2px var(--polo-brass); }
+    .screen-frame {
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      object-fit: contain;
+      object-position: center top;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    .screen-input {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .screen-status {
+      flex-shrink: 0;
+      padding: 4px 10px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: #a4adba;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     @media (max-width: 710px) {
       .composer-dock { padding-left: 10px; padding-right: 10px; }
       .composer-inner { padding: 9px 9px; }
@@ -8484,6 +8525,9 @@
     const covisionLabel = document.getElementById('covisionLabel');
 
     let isDualBrowser = false;
+    // Ego Lite screen views per pane (see renderScreenView), declared early for updateNavBtnStates.
+    const screenViews = { p1: null, p2: null };
+    let browserUrlDirty = false;
     let browserState2 = null;
     let activeFocusedPane = 'top';
 
@@ -8524,16 +8568,18 @@
     function updateNavBtnStates() {
       const sid = paneSessionId[focusedBrowserPane()];
       const h = browserHistory[sid] || { stack: [], index: 0 };
+      // A screen view follows the Ego tab's own history, which the console cannot see: keep both enabled.
+      const screenOn = !!screenViews[focusedBrowserPane()];
       const backBtn = document.getElementById('browserBackBtn');
       const fwdBtn = document.getElementById('browserForwardBtn');
       if (backBtn) {
-        const canBack = (h.index > 0);
+        const canBack = screenOn || (h.index > 0);
         backBtn.disabled = !canBack;
         backBtn.style.opacity = canBack ? '1' : '0.35';
         backBtn.style.pointerEvents = canBack ? 'auto' : 'none';
       }
       if (fwdBtn) {
-        const canFwd = (h.index < h.stack.length - 1);
+        const canFwd = screenOn || (h.index < h.stack.length - 1);
         fwdBtn.disabled = !canFwd;
         fwdBtn.style.opacity = canFwd ? '1' : '0.35';
         fwdBtn.style.pointerEvents = canFwd ? 'auto' : 'none';
@@ -8556,6 +8602,7 @@
     // (CSP, service down), offline = no network, error = a response that cannot be shown.
     function classifyBrowserFailure(status, err) {
       if (status === 401 || status === 403) return 'locked';
+      if (err && err.screenView) return 'screen';
       if (!status && err) return (typeof navigator !== 'undefined' && navigator.onLine === false) ? 'offline' : 'blocked';
       return 'error';
     }
@@ -8614,6 +8661,7 @@
       blocked: ['Browser service unreachable', 'This page could not reach the browser service. The page security policy may block it, or the service is not running.'],
       offline: ['Offline', 'There is no network connection, so the browser state could not be loaded.'],
       error: ['Browser service error', 'The browser service answered, but its state could not be shown.'],
+      screen: ['Ego Lite screen unavailable', 'The signed-in Ego Lite tab could not be shown. Check that Ego Lite is open; the screen bridge starts again within a minute.'],
     };
 
     // Each pane only renders the answer to its latest request, so a slow failure cannot
@@ -8704,6 +8752,7 @@
 
     async function navigateBrowser(url, sessionId = paneSessionId.p1, isTraverse = false, pane = paneForSession(sessionId)) {
       if (!url) return;
+      browserUrlDirty = false;
       const epoch = browserAuthEpoch;
       let target = url.trim();
       const currSt = (pane === 'p2') ? browserState2 : browserState;
@@ -8805,6 +8854,7 @@
         fetchBrowserState(paneSessionId.p2, 'p2');
         setActiveFocusedPane('bottom');
       } else {
+        stopScreenView('p2');
         setActiveFocusedPane('top');
       }
     }
@@ -9011,6 +9061,209 @@
       }
     }
 
+    // Ego Lite screen: the pane shows the session's real Ego Lite tab (the logged-in browser profile)
+    // as live frames and forwards clicks, scrolling and typing to it. Needs control:browser.
+
+    function stopScreenView(pane) {
+      const v = screenViews[pane];
+      if (!v) return;
+      v.stopped = true;
+      clearTimeout(v.timer);
+      if (v.resizeObserver) v.resizeObserver.disconnect();
+      if (v.objectUrl) URL.revokeObjectURL(v.objectUrl);
+      screenViews[pane] = null;
+      updateNavBtnStates();
+    }
+
+    // Maps a pointer position on the frame to page CSS pixels (object-fit: contain, top-aligned).
+    // The page is normally laid out at the pane's size, so scale is 1 and there is no letterbox.
+    function screenPoint(rect, pageWidth, pageHeight, clientX, clientY) {
+      if (!rect.width || !rect.height || !pageWidth || !pageHeight) return null;
+      const scale = Math.min(rect.width / pageWidth, rect.height / pageHeight);
+      const ox = (rect.width - pageWidth * scale) / 2, oy = 0;
+      const x = (clientX - rect.left - ox) / scale, y = (clientY - rect.top - oy) / scale;
+      if (x < 0 || y < 0 || x > pageWidth || y > pageHeight) return null;
+      return { x: Math.round(x), y: Math.round(y) };
+    }
+
+    // Named keys and shortcut chords go as key presses; plain characters arrive through the
+    // hidden textarea's input/composition events, so Korean IME text is sent whole.
+    const SCREEN_NAMED_KEYS = ['Enter', 'Backspace', 'Tab', 'Escape', 'Delete', 'ArrowUp', 'ArrowDown',
+      'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'];
+    function screenKey(e) {
+      if (e.isComposing || e.keyCode === 229) return null;
+      const mods = [];
+      if (e.ctrlKey) mods.push('Control');
+      if (e.metaKey) mods.push('Meta');
+      if (e.altKey) mods.push('Alt');
+      if (SCREEN_NAMED_KEYS.includes(e.key)) {
+        if (e.shiftKey) mods.push('Shift');
+        return [...mods, e.key].join('+');
+      }
+      if (mods.length && /^[A-Za-z0-9]$/.test(e.key)) return [...mods, ...(e.shiftKey ? ['Shift'] : []), e.key.toLowerCase()].join('+');
+      return null;
+    }
+
+    function renderScreenView(pane) {
+      const vp = document.getElementById(pane === 'p2' ? 'browserViewport2' : 'browserViewport');
+      const sessionId = paneSessionId[pane];
+      if (!vp) return;
+      stopScreenView(pane);
+      const st = pane === 'p2' ? browserState2 : browserState;
+
+      const view = document.createElement('div');
+      view.className = 'screen-view';
+      const img = document.createElement('img');
+      img.className = 'screen-frame';
+      img.alt = `Ego Lite screen: ${(st && st.title) || 'page'}`;
+      img.draggable = false;
+      img.tabIndex = 0;
+      const input = document.createElement('textarea');
+      input.className = 'screen-input';
+      input.setAttribute('aria-label', 'Type into the Ego Lite page. Control+Escape leaves the page.');
+      input.setAttribute('autocomplete', 'off');
+      input.spellcheck = false;
+      const status = document.createElement('div');
+      status.className = 'screen-status';
+      status.textContent = 'Ego Lite · connecting…';
+      view.append(img, input, status);
+      vp.replaceChildren(view);
+
+      const v = { stopped: false, timer: null, inFlight: false, again: false, objectUrl: null, pageWidth: 0, pageHeight: 0, failures: 0, epoch: browserAuthEpoch, wheel: null, resizeObserver: null, send: null };
+      screenViews[pane] = v;
+      const stillMine = () => !v.stopped && paneSessionId[pane] === sessionId && browserAuthEpoch === v.epoch && isBrowserOpen
+        && (pane === 'p1' || isDualBrowser) && vp.contains(view);
+      // Only ever stop this view; a newer view in the same pane is not ours to stop.
+      const stopSelf = () => { if (screenViews[pane] === v) stopScreenView(pane); else v.stopped = true; };
+      const fail = (code, err) => { stopSelf(); renderBrowserUnavailable(sessionId, code, { screenView: true, cause: err }, pane); };
+      // One polling loop per view: every reschedule replaces the single pending timer.
+      const schedule = ms => { clearTimeout(v.timer); v.timer = setTimeout(tick, ms); };
+
+      async function tick() {
+        if (!stillMine()) { stopSelf(); return; }
+        if (v.inFlight) { v.again = true; return; }
+        if (document.hidden) { schedule(1000); return; }
+        v.inFlight = true;
+        let next = 350;
+        try {
+          const res = await fetch(`http://127.0.0.1:8788/api/browser/screen?sessionId=${encodeURIComponent(sessionId)}`, { headers: browserAuthHeaders(), cache: 'no-store' });
+          if (!stillMine()) { stopSelf(); return; }
+          if (!res.ok) {
+            v.failures++;
+            if (res.status === 401 || res.status === 403 || res.status === 409 || v.failures >= 3) { fail(res.status); return; }
+            status.textContent = `Ego Lite · retrying (HTTP ${res.status})…`;
+            next = 1000;
+          } else {
+            v.failures = 0;
+            const blob = await res.blob();
+            if (!stillMine()) { stopSelf(); return; }
+            const url = URL.createObjectURL(blob);
+            img.src = url;
+            if (v.objectUrl) URL.revokeObjectURL(v.objectUrl);
+            v.objectUrl = url;
+            v.pageWidth = Number(res.headers.get('X-Page-Width')) || img.naturalWidth;
+            v.pageHeight = Number(res.headers.get('X-Page-Height')) || img.naturalHeight;
+            let pageUrl = '', pageTitle = '';
+            try { pageUrl = decodeURIComponent(res.headers.get('X-Page-Url') || ''); pageTitle = decodeURIComponent(res.headers.get('X-Page-Title') || ''); } catch (_) {}
+            v.pageUrl = pageUrl;
+            status.textContent = `Ego Lite · ${pageTitle || pageUrl || 'page'}`;
+            img.alt = `Ego Lite screen: ${pageTitle || pageUrl || 'page'}`;
+            if (pageUrl && focusedBrowserPane() === pane && browserUrlInput && !browserUrlDirty && document.activeElement !== browserUrlInput) browserUrlInput.value = pageUrl;
+          }
+        } catch (e) {
+          v.failures++;
+          if (v.failures >= 3) { fail(0, e); return; }
+          status.textContent = 'Ego Lite · retrying…';
+          next = 1000;
+        } finally {
+          v.inFlight = false;
+        }
+        if (!v.stopped) schedule(v.again ? 60 : next);
+        v.again = false;
+      }
+
+      async function send(payload) {
+        if (!stillMine()) return;
+        try {
+          await fetch('http://127.0.0.1:8788/api/browser/screen/input', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...browserAuthHeaders() },
+            body: JSON.stringify({ sessionId, ...payload })
+          });
+        } catch (_) { /* the next frame shows whether it landed */ }
+        if (v.stopped) return;
+        if (v.inFlight) v.again = true; else schedule(60);
+      }
+      v.send = send;
+
+      // Keep the Ego page laid out at this pane's size (sent now, and again whenever the pane resizes).
+      let sentSize = '';
+      const fitToPane = () => {
+        const width = Math.max(320, Math.min(3840, Math.round(img.clientWidth)));
+        const height = Math.max(240, Math.min(2400, Math.round(img.clientHeight)));
+        if (!img.clientWidth || !img.clientHeight || `${width}x${height}` === sentSize) return;
+        sentSize = `${width}x${height}`;
+        send({ type: 'viewport', width, height });
+      };
+      if (typeof ResizeObserver === 'function') {
+        let resizeTimer = null;
+        const ro = new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (stillMine()) fitToPane(); else ro.disconnect(); }, 150); });
+        ro.observe(img);
+        v.resizeObserver = ro;
+      }
+      fitToPane();
+
+      img.addEventListener('click', e => {
+        const p = screenPoint(img.getBoundingClientRect(), v.pageWidth, v.pageHeight, e.clientX, e.clientY);
+        if (p) send({ type: 'click', x: p.x, y: p.y });
+        input.focus({ preventScroll: true });
+      });
+      // Keyboard users: focus the frame, then Enter starts typing into the page.
+      img.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.focus({ preventScroll: true }); }
+      });
+      img.addEventListener('wheel', e => {
+        e.preventDefault();
+        const p = screenPoint(img.getBoundingClientRect(), v.pageWidth, v.pageHeight, e.clientX, e.clientY);
+        if (!p) return;
+        if (!v.wheel) {
+          v.wheel = { x: p.x, y: p.y, dx: 0, dy: 0 };
+          setTimeout(() => {
+            const w = v.wheel; v.wheel = null;
+            const clamp = n => Math.max(-1500, Math.min(1500, Math.round(n) || 0));
+            if (w && (w.dx || w.dy)) send({ type: 'wheel', x: w.x, y: w.y, dx: clamp(w.dx), dy: clamp(w.dy) });
+          }, 80);
+        }
+        v.wheel.dx += e.deltaX; v.wheel.dy += e.deltaY;
+      }, { passive: false });
+      input.addEventListener('keydown', e => {
+        // Control+Escape (or Meta+Escape) hands the keyboard back to the console.
+        if (e.key === 'Escape' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); img.focus({ preventScroll: true }); return; }
+        // Paste goes through the paste event (the console's clipboard text), not a remote shortcut.
+        if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'v' || e.key === 'V')) return;
+        const key = screenKey(e);
+        if (key) { e.preventDefault(); send({ type: 'key', key }); }
+      });
+      input.addEventListener('paste', e => {
+        e.preventDefault();
+        const text = (e.clipboardData && e.clipboardData.getData('text')) || '';
+        input.value = '';
+        if (text) send({ type: 'type', text: text.slice(0, 2000) });
+      });
+      input.addEventListener('input', e => {
+        if (e.isComposing) return;
+        const text = input.value;
+        input.value = '';
+        if (text) send({ type: 'type', text: text.slice(0, 2000) });
+      });
+      input.addEventListener('compositionend', e => {
+        input.value = '';
+        if (e.data) send({ type: 'type', text: e.data.slice(0, 2000) });
+      });
+      updateNavBtnStates();
+      tick();
+    }
+
     function renderBrowserViewport() {
       if (!browserViewport || !browserState) return;
 
@@ -9023,6 +9276,9 @@
       if (pane1Title) {
         pane1Title.textContent = `P1 · ${browserState.title || browserState.url || 'Primary Browser'}`;
       }
+
+      if (browserState.screen && browserState.kind !== 'ledger') { renderScreenView('p1'); return; }
+      stopScreenView('p1');
 
       if (browserState.kind === 'youtube') {
         let vid = browserState.videoId || browserState.id;
@@ -9430,6 +9686,9 @@
       if (titleEl) {
         titleEl.textContent = `P2 · ${browserState2.title || browserState2.url || 'Secondary Browser'}`;
       }
+
+      if (browserState2.screen && browserState2.kind !== 'ledger') { renderScreenView('p2'); return; }
+      stopScreenView('p2');
 
       if (browserState2.kind === 'youtube') {
         let vid = browserState2.videoId || browserState2.id;
@@ -9867,7 +10126,16 @@
       setDualBrowser(false);
     });
 
+    // In a screen view, back/forward/reload act on the Ego Lite tab itself (links followed inside it included).
+    function screenNav(type) {
+      const v = screenViews[focusedBrowserPane()];
+      if (!v || v.stopped || !v.send) return false;
+      v.send({ type });
+      return true;
+    }
+
     document.getElementById('browserBackBtn')?.addEventListener('click', () => {
+      if (screenNav('back')) return;
       const pane = focusedBrowserPane(), sid = paneSessionId[pane];
       const h = browserHistory[sid];
       if (h && h.index > 0) {
@@ -9878,6 +10146,7 @@
     });
 
     document.getElementById('browserForwardBtn')?.addEventListener('click', () => {
+      if (screenNav('forward')) return;
       const pane = focusedBrowserPane(), sid = paneSessionId[pane];
       const h = browserHistory[sid];
       if (h && h.index < h.stack.length - 1) {
@@ -9888,6 +10157,7 @@
     });
 
     document.getElementById('browserReloadBtn')?.addEventListener('click', () => {
+      if (screenNav('reload')) return;
       const pane = focusedBrowserPane(), sid = paneSessionId[pane];
       const currSt = (pane === 'p2') ? browserState2 : browserState;
       if (currSt && currSt.url) {
@@ -9899,7 +10169,10 @@
       navigateActivePane(browserUrlInput.value.trim());
     });
 
+    // While the operator is editing the address, live screen frames must not overwrite it.
+    browserUrlInput?.addEventListener('input', () => { browserUrlDirty = true; });
     browserUrlInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') browserUrlDirty = false;
       if (e.key === 'Enter') {
         navigateActivePane(browserUrlInput.value.trim());
       }

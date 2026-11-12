@@ -8,7 +8,7 @@ patterns=[
 ]
 for p in Path('.').rglob('*'):
  if not p.is_file() or '.git' in p.parts or '__pycache__' in p.parts or p.name=='check_public_source.py':continue
- if p.suffix not in {'.py','.html','.cjs','.md','.yml','.yaml',''}:raise SystemExit('Unexpected public file:'+str(p))
+ if p.suffix not in {'.py','.html','.cjs','.mjs','.sh','.md','.yml','.yaml',''}:raise SystemExit('Unexpected public file:'+str(p))
  value=p.read_text()
  if any(re.search(pattern,value) for pattern in patterns):
   raise SystemExit('BLOCKED_PUBLIC_CONTENT:'+str(p))

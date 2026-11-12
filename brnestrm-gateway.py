@@ -1221,6 +1221,54 @@ def _reserve_browser_session(session_id):
             _browser_sessions[session_id] = _init_session_browser(session_id)
 
 
+# Ego Lite screen bridge (ops/ego-screen-bridge.mjs): loopback only, shared secret, no Origin.
+EGO_BRIDGE_PORT = int(os.environ.get("BRNESTRM_EGO_BRIDGE_PORT", "8794"))
+EGO_BRIDGE_SECRET_FILE = os.environ.get("BRNESTRM_EGO_BRIDGE_SECRET_FILE",
+                                        os.path.join(os.path.expanduser("~"), ".brnestrm", "ego-bridge.secret"))
+SCREEN_INPUT_FIELDS = {"click": {"x", "y", "button"}, "wheel": {"x", "y", "dx", "dy"}, "type": {"text"},
+                       "key": {"key"}, "viewport": {"width", "height"}, "back": set(), "forward": set(), "reload": set()}
+EGO_BRIDGE_MAX_BODY = 16 * 1024 * 1024
+# Loopback only: never route the bridge secret, frames or typed text through a configured proxy.
+_EGO_BRIDGE_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _ego_bridge(method, path, payload=None, timeout=20):
+    """(status, headers, body) from the local Ego bridge, or None when it is not running."""
+    try:
+        with open(EGO_BRIDGE_SECRET_FILE, "r", encoding="utf-8") as f:
+            secret = f.read().strip()
+    except OSError:
+        return None
+    if len(secret) < 32:
+        return None
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(f"http://127.0.0.1:{EGO_BRIDGE_PORT}{path}", data=data, method=method,
+                                 headers={"X-Bridge-Secret": secret, "Content-Type": "application/json"})
+    try:
+        with _EGO_BRIDGE_OPENER.open(req, timeout=timeout) as r:
+            body = r.read(EGO_BRIDGE_MAX_BODY + 1)
+            if len(body) > EGO_BRIDGE_MAX_BODY:
+                return 502, {}, b""
+            return r.status, dict(r.headers), body
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read(64 * 1024)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def _screen_goto(session_id, state):
+    """Open a non-ledger page in the session's Ego Lite tab. True when the bridge took it."""
+    url = state.get("url") if isinstance(state, dict) else None
+    if isinstance(state, dict) and state.get("kind") == "ledger":
+        # The pane now shows the ledger: close the session's signed-in tab so nothing can drive it unseen.
+        _ego_bridge("POST", "/close", {"session": session_id}, timeout=5)
+        return False
+    if not url or not str(url).lower().startswith(("http://", "https://")):
+        return False
+    r = _ego_bridge("POST", "/goto", {"session": session_id, "url": url})
+    return bool(r and r[0] == 200)
+
+
 def _targets_this_gateway(normalized):
     try:
         parsed = urllib.parse.urlparse(normalized)
@@ -1501,7 +1549,41 @@ class Handler(BaseHTTPRequestHandler):
             if not _valid_chat_session(sid):
                 return self._json(400, {"ok": False, "error": "bad_request: invalid sessionId"})
             _reserve_browser_session(sid)
-            return self._json(200, {"ok": True, **public_browser_state(get_browser_state(sid))})
+            state = get_browser_state(sid)
+            screen = state.get("kind") != "ledger" and bool((_ego_bridge("GET", "/health", timeout=2) or (0,))[0] == 200)
+            return self._json(200, {"ok": True, **public_browser_state(state), "screen": screen})
+        if p == "/api/browser/screen":
+            ok_auth, status_code, err_msg, _ = check_authenticated_capability(
+                self.headers, required_scope=BROWSER_SCOPE, required_permission=BROWSER_PERMISSION
+            )
+            if not ok_auth:
+                return self._json(status_code, {"ok": False, "error": err_msg})
+            params = dict(urllib.parse.parse_qsl(self.path.partition("?")[2]))
+            sid = params.get("sessionId", "")
+            if not _valid_chat_session(sid):
+                return self._json(400, {"ok": False, "error": "bad_request: invalid sessionId"})
+            _reserve_browser_session(sid)
+            state = get_browser_state(sid)
+            if state.get("kind") == "ledger":
+                return self._json(409, {"ok": False, "error": "no_screen_for_ledger"})
+            r = _ego_bridge("GET", "/frame?session=" + urllib.parse.quote(sid), timeout=10)
+            if r and r[0] == 404 and _screen_goto(sid, state):
+                r = _ego_bridge("GET", "/frame?session=" + urllib.parse.quote(sid), timeout=10)
+            if not r:
+                return self._json(503, {"ok": False, "error": "screen_unavailable"})
+            if r[0] != 200 or not r[2].startswith(b"\x89PNG"):
+                return self._json(502, {"ok": False, "error": "screen_failed"})
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            for h in ("X-Page-Width", "X-Page-Height", "X-Page-Url", "X-Page-Title"):
+                v = r[1].get(h)
+                if v and len(v) <= 4096 and "\n" not in v and "\r" not in v:
+                    self.send_header(h, v)
+            self.send_header("Content-Length", str(len(r[2])))
+            self.end_headers()
+            return self.wfile.write(r[2])
         if p == "/api/sillok":
             ok, status_code, err_msg = check_private_data_access(self.headers, resource="sillok audit ledger")
             return self._json(status_code, {"ok": False, "error": err_msg})
@@ -1993,7 +2075,38 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 return self._json(500, {"ok": False, "error": "audit_failure"})
             _reserve_browser_session(sid)
-            return self._json(200, {"ok": True, **public_browser_state(set_browser_navigate(target, sid))})
+            state = set_browser_navigate(target, sid)
+            return self._json(200, {"ok": True, **public_browser_state(state), "screen": _screen_goto(sid, state)})
+        if p == "/api/browser/screen/input":
+            ok_orig, orig_code, orig_msg, _ = extract_and_verify_request_origin(self.headers, is_mutating=True)
+            if not ok_orig:
+                return self._json(orig_code, {"ok": False, "error": orig_msg})
+            ok_auth, status_code, err_msg, _ = check_authenticated_capability(
+                self.headers, required_scope=BROWSER_SCOPE, required_permission=BROWSER_PERMISSION
+            )
+            if not ok_auth:
+                return self._json(status_code, {"ok": False, "error": err_msg})
+            if not isinstance(body, dict):
+                return self._json(400, {"ok": False, "error": "bad_request"})
+            sid = body.get("sessionId")
+            kind = body.get("type")
+            fields = set(body) - {"sessionId", "type"}
+            if not _valid_chat_session(sid) or kind not in SCREEN_INPUT_FIELDS or not fields <= SCREEN_INPUT_FIELDS[kind]:
+                return self._json(400, {"ok": False, "error": "bad_request: unsupported screen input"})
+            if kind == "type" and (not isinstance(body.get("text"), str) or not 0 < len(body["text"]) <= 2000):
+                return self._json(400, {"ok": False, "error": "bad_request: text must be 1-2000 characters"})
+            if get_browser_state(sid).get("kind") == "ledger":
+                return self._json(409, {"ok": False, "error": "no_screen_for_ledger"})
+            payload = {"session": sid, "type": kind, **{k: body[k] for k in fields}}
+            r = _ego_bridge("POST", "/input", payload, timeout=12)
+            if not r:
+                return self._json(503, {"ok": False, "error": "screen_unavailable"})
+            try:
+                answer = json.loads(r[2] or b"{}")
+            except ValueError:
+                answer = {}
+            return self._json(r[0] if r[0] in (200, 400, 404, 504) else 502,
+                              {"ok": r[0] == 200, **({"error": str(answer.get("error"))[:40]} if r[0] != 200 else {})})
         if p in ("/api/browser/pingpong", "/api/browser/toggle"):
             ok, status_code, err_msg = check_private_data_access(self.headers, body=body, resource="browser session control")
             return self._json(status_code, {"ok": False, "error": err_msg})
