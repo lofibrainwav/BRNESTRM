@@ -4758,6 +4758,12 @@
       opacity: 0;
       pointer-events: none;
     }
+    /* Placeholder under the desktop shell's native browser view (see renderShellView). */
+    .shell-view {
+      width: 100%;
+      height: 100%;
+      background: #0a0d14;
+    }
     .screen-status {
       flex-shrink: 0;
       padding: 4px 10px;
@@ -8528,6 +8534,10 @@
     // Ego Lite screen views per pane (see renderScreenView), declared early for updateNavBtnStates.
     const screenViews = { p1: null, p2: null };
     let browserUrlDirty = false;
+    // Desktop shell (desktop/ in this repo): inside it the pane is a real browser view placed over
+    // the pane's box; in an ordinary browser this is null and the Ego Lite screen view is used.
+    const desktopShell = (typeof window !== 'undefined' && window.brnestrmShell && window.brnestrmShell.version === 1) ? window.brnestrmShell : null;
+    const shellViews = { p1: null, p2: null };
     let browserState2 = null;
     let activeFocusedPane = 'top';
 
@@ -8569,7 +8579,7 @@
       const sid = paneSessionId[focusedBrowserPane()];
       const h = browserHistory[sid] || { stack: [], index: 0 };
       // A screen view follows the Ego tab's own history, which the console cannot see: keep both enabled.
-      const screenOn = !!screenViews[focusedBrowserPane()];
+      const screenOn = !!screenViews[focusedBrowserPane()] || !!shellViews[focusedBrowserPane()];
       const backBtn = document.getElementById('browserBackBtn');
       const fwdBtn = document.getElementById('browserForwardBtn');
       if (backBtn) {
@@ -8671,6 +8681,7 @@
     function renderBrowserUnavailable(sessionId, status, err, pane = paneForSession(sessionId)) {
       const viewport = document.getElementById(pane === 'p2' ? 'browserViewport2' : 'browserViewport');
       if (!viewport) return null;
+      stopShellView(pane);
       const kind = classifyBrowserFailure(status, err);
       const signedIn = typeof currentAuthToken !== 'undefined' && !!currentAuthToken;
       const [title, reason] = BROWSER_FAILURE_COPY[kind === 'locked' && signedIn ? 'lockedSignedIn' : kind];
@@ -8855,6 +8866,7 @@
         setActiveFocusedPane('bottom');
       } else {
         stopScreenView('p2');
+        stopShellView('p2');
         setActiveFocusedPane('top');
       }
     }
@@ -9063,6 +9075,70 @@
 
     // Ego Lite screen: the pane shows the session's real Ego Lite tab (the logged-in browser profile)
     // as live frames and forwards clicks, scrolling and typing to it. Needs control:browser.
+
+    function stopShellView(pane) {
+      const s = shellViews[pane];
+      if (!s) return;
+      s.stopped = true;
+      cancelAnimationFrame(s.raf);
+      shellViews[pane] = null;
+      if (desktopShell) desktopShell.hide(pane);
+      updateNavBtnStates();
+    }
+
+    // Keeps the shell's native view exactly over this pane's box, every animation frame. The view
+    // is hidden whenever the console draws something over the pane (dialogs, drawers), because a
+    // native view always paints above the page.
+    function renderShellView(pane) {
+      const vp = document.getElementById(pane === 'p2' ? 'browserViewport2' : 'browserViewport');
+      const sessionId = paneSessionId[pane];
+      const st = pane === 'p2' ? browserState2 : browserState;
+      if (!vp || !desktopShell || !st) return;
+      stopScreenView(pane);
+      const rectOf = el => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height }; };
+      const current = shellViews[pane];
+      if (current && !current.stopped && current.sessionId === sessionId && current.epoch === browserAuthEpoch && vp.contains(current.el)) {
+        // A re-render of the same session: keep the view (and whatever page it followed links to).
+        if (st.url !== current.url) { current.url = st.url; desktopShell.show(pane, st.url, rectOf(current.el)); }
+        return;
+      }
+      stopShellView(pane);
+      const el = document.createElement('div');
+      el.className = 'shell-view';
+      el.setAttribute('role', 'region');
+      el.setAttribute('aria-label', `Browser: ${st.title || st.url}`);
+      vp.replaceChildren(el);
+      const s = { el, sessionId, url: st.url, epoch: browserAuthEpoch, stopped: false, raf: 0, last: '' };
+      shellViews[pane] = s;
+      const stillMine = () => !s.stopped && paneSessionId[pane] === sessionId && browserAuthEpoch === s.epoch && isBrowserOpen
+        && (pane === 'p1' || isDualBrowser) && vp.contains(el);
+      const covered = r => {
+        if (document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]):not([aria-hidden="true"])')) return true;
+        const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return !!top && top !== el && !el.contains(top);
+      };
+      const follow = () => {
+        if (!stillMine()) { if (shellViews[pane] === s) stopShellView(pane); else s.stopped = true; return; }
+        const r = rectOf(el);
+        const rect = covered(r) ? null : r;
+        const key = rect ? `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)},${Math.round(rect.height)}` : 'hidden';
+        if (key !== s.last) { s.last = key; desktopShell.setBounds(pane, rect); }
+        s.raf = requestAnimationFrame(follow);
+      };
+      desktopShell.show(pane, st.url, rectOf(el));
+      s.raf = requestAnimationFrame(follow);
+      updateNavBtnStates();
+    }
+
+    if (desktopShell) {
+      desktopShell.onState(state => {
+        const s = state && shellViews[state.pane];
+        if (!s || s.stopped) return;
+        const titleEl = document.getElementById(state.pane === 'p2' ? 'pane2Title' : 'pane1Title');
+        if (titleEl && state.title) titleEl.textContent = `${state.pane === 'p2' ? 'P2' : 'P1'} · ${state.title}`;
+        if (state.url && focusedBrowserPane() === state.pane && browserUrlInput && !browserUrlDirty && document.activeElement !== browserUrlInput) browserUrlInput.value = state.url;
+      });
+    }
 
     const SCREEN_FRAME_GAP_MS = 15;   // pause between one frame and the next request of the same worker
     const SCREEN_PIPELINE = 2;        // frame requests in flight per view
@@ -9291,6 +9367,8 @@
         pane1Title.textContent = `P1 · ${browserState.title || browserState.url || 'Primary Browser'}`;
       }
 
+      if (desktopShell && browserState.kind !== 'ledger' && isSafeFrameUrl(browserState.url)) { renderShellView('p1'); return; }
+      stopShellView('p1');
       if (browserState.screen && browserState.kind !== 'ledger') { renderScreenView('p1'); return; }
       stopScreenView('p1');
 
@@ -9701,6 +9779,8 @@
         titleEl.textContent = `P2 · ${browserState2.title || browserState2.url || 'Secondary Browser'}`;
       }
 
+      if (desktopShell && browserState2.kind !== 'ledger' && isSafeFrameUrl(browserState2.url)) { renderShellView('p2'); return; }
+      stopShellView('p2');
       if (browserState2.screen && browserState2.kind !== 'ledger') { renderScreenView('p2'); return; }
       stopScreenView('p2');
 
@@ -10142,7 +10222,9 @@
 
     // In a screen view, back/forward/reload act on the Ego Lite tab itself (links followed inside it included).
     function screenNav(type) {
-      const v = screenViews[focusedBrowserPane()];
+      const pane = focusedBrowserPane();
+      if (shellViews[pane] && !shellViews[pane].stopped) { desktopShell[type](pane); return true; }
+      const v = screenViews[pane];
       if (!v || v.stopped || !v.send) return false;
       v.send({ type });
       return true;

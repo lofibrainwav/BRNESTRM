@@ -27,6 +27,7 @@ Open http://127.0.0.1:8788 locally. Never bind a public network interface.
     python3 -B tests/test_gateway_browser.py
     python3 -B tests/test_gateway_screen.py
     node tests/test_ego_bridge.mjs
+    node tests/test_desktop_policy.cjs
 
 ## Optional Ego Lite screen (signed-in browser in the pane)
 
@@ -43,6 +44,25 @@ scrolling and typing to it, so the profile's existing sign-ins apply.
 - It never reads cookies, storage or saved passwords. Settings:
   `BRNESTRM_EGO_BRIDGE_PORT`, `BRNESTRM_EGO_BRIDGE_SECRET_FILE`,
   `BRNESTRM_EGO_PROFILE` (default `Profile 1`). `--restart` reloads it.
+
+## Optional desktop shell (real browser in the pane)
+
+`desktop/` is a small Electron app (version pinned) that opens the console at
+http://127.0.0.1:8788/ in its own window and puts a real browser view exactly
+over the browser pane. Google, YouTube and ChatGPT then run natively: full
+frame rate, sound, hover, drag and sign-in pop-ups. Outside the app the console
+keeps using the Ego Lite screen view above.
+
+    desktop/run.sh               # first run installs Electron with npm ci
+    desktop/make-mac-app.sh      # optional ~/Applications/BRNESTRM.app launcher
+
+- The browser view uses its own persistent login store inside the app. Sign in
+  once there; nothing is copied from another browser profile.
+- Only the console's own page can position or navigate the view. Site pages run
+  sandboxed with no Node and no access to the console.
+- Sites may use full screen and clipboard writes only. Camera, microphone,
+  location and notifications are refused.
+- A hidden pane is muted.
 
 ## Chat history
 
