@@ -16,6 +16,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
-printf '#!/bin/bash\nexec /bin/bash %q\n' "$HERE/run.sh" > "$APP/Contents/MacOS/BRNESTRM"
+# Output goes to a log; if the shell cannot start, say so instead of failing silently.
+cat > "$APP/Contents/MacOS/BRNESTRM" <<LAUNCH
+#!/bin/bash
+LOG="\$HOME/Library/Logs/brnestrm-desktop.log"
+echo "--- \$(date) start" >> "\$LOG"
+/bin/bash $(printf %q "$HERE/run.sh") >> "\$LOG" 2>&1 || /usr/bin/osascript -e 'display alert "BRNESTRM could not start" message "Details: ~/Library/Logs/brnestrm-desktop.log"'
+LAUNCH
 chmod +x "$APP/Contents/MacOS/BRNESTRM"
 echo "created $APP"
