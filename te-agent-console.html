@@ -5223,7 +5223,7 @@
         </div>
 
         <!-- CHAT WORKSTATION HORIZONTAL RESIZER -->
-        <div class="chat-width-resizer" id="chatWidthResizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Chat workstation width resizer" aria-valuenow="480" aria-valuemin="280" aria-valuemax="900" title="Drag or use arrow keys to resize chat workstation width">
+        <div class="chat-width-resizer" id="chatWidthResizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Chat workstation width resizer" aria-valuenow="480" aria-valuemin="340" aria-valuemax="840" title="Drag or use arrow keys to resize chat workstation width">
           <div class="chat-resizer-badge" id="chatResizerBadge">480px</div>
         </div>
 
@@ -7065,6 +7065,7 @@
             renderSessions();
             renderThread(sess);
             if (isBrowserOpen) {
+              if (!(isDualBrowser && activeSessionId === paneSessionId.p2)) paneSessionId.p1 = activeSessionId;
               fetchBrowserState(activeSessionId);
             }
           }
@@ -7089,6 +7090,7 @@
       renderSessions();
       renderThread(newSess);
       if (isBrowserOpen) {
+        paneSessionId.p1 = activeSessionId;
         fetchBrowserState(activeSessionId);
       }
     });
@@ -7504,6 +7506,8 @@
         if (loginBtn) loginBtn.style.display = 'inline-block';
         if (logoutBtn) logoutBtn.style.display = 'none';
       }
+      // Sign-in and sign-out change what the browser API allows; reload the visible panes.
+      if (typeof onBrowserAuthChanged === 'function') onBrowserAuthChanged(!!authenticated);
     }
 
     let teRadarNodes = [];
@@ -7582,7 +7586,7 @@
       try {
         const payload = {
           scope: currentAuthScope,
-          permissions: ['read:provenance', 'read:knowledge'],
+          permissions: ['read:provenance', 'read:knowledge', 'control:browser'],
           intent: 'Operator console session authorization',
           sessionId: currentAuthSessionId,
           simulated_outcome: simulatedOutcome
@@ -8518,7 +8522,7 @@
     };
 
     function updateNavBtnStates() {
-      const sid = (activeFocusedPane === 'bottom' && isDualBrowser) ? 'sess-2' : 'sess-1';
+      const sid = paneSessionId[focusedBrowserPane()];
       const h = browserHistory[sid] || { stack: [], index: 0 };
       const backBtn = document.getElementById('browserBackBtn');
       const fwdBtn = document.getElementById('browserForwardBtn');
@@ -8537,8 +8541,8 @@
     }
 
     function navigateActivePane(url) {
-      const sessId = (activeFocusedPane === 'bottom' && isDualBrowser) ? 'sess-2' : 'sess-1';
-      navigateBrowser(url, sessId);
+      const pane = focusedBrowserPane();
+      navigateBrowser(url, paneSessionId[pane], false, pane);
     }
 
     // The split CSS caps the chat column at half the stage; the splitter uses the same cap.
@@ -8556,8 +8560,57 @@
       return 'error';
     }
 
+    // Which browser session each pane shows. Pane 2 is only visible in dual mode, so in single mode
+    // every session renders into pane 1.
+    const paneSessionId = { p1: 'sess-1', p2: 'sess-2' };
+    function paneForSession(sessionId) {
+      return (typeof isDualBrowser !== 'undefined' && isDualBrowser && sessionId === paneSessionId.p2) ? 'p2' : 'p1';
+    }
+    function focusedBrowserPane() {
+      return (activeFocusedPane === 'bottom' && isDualBrowser) ? 'p2' : 'p1';
+    }
+    // Bumped on every sign-in/sign-out: answers to requests made under the old state are dropped.
+    let browserAuthEpoch = 0;
+    function onBrowserAuthChanged(signedIn) {
+      try {
+        browserAuthEpoch++;
+        if (!signedIn) {
+          browserState = null;
+          browserState2 = null;
+          if (browserUrlInput) browserUrlInput.value = '';
+        }
+        refreshVisibleBrowserPanes();
+      } catch (_) {
+        // Called before the browser module finished initialising; nothing to refresh yet.
+      }
+    }
+
+    // Browser control needs the Touch ID capability (permission control:browser).
+    function browserAuthHeaders() {
+      if (typeof currentAuthToken === 'undefined' || !currentAuthToken) return {};
+      return { Authorization: 'Bearer ' + currentAuthToken, 'X-Session-ID': currentAuthSessionId };
+    }
+
+    // The web frame is sandboxed with allow-scripts + allow-same-origin, so it must never show this
+    // console's own origin (that would undo the sandbox) or a non-http(s) URL.
+    function isSafeFrameUrl(value) {
+      try {
+        const u = new URL(String(value || ''), location.href);
+        return (u.protocol === 'http:' || u.protocol === 'https:') && u.origin !== location.origin;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function refreshVisibleBrowserPanes() {
+      if (!isBrowserOpen) return;
+      fetchBrowserState(paneSessionId.p1, 'p1');
+      if (isDualBrowser) fetchBrowserState(paneSessionId.p2, 'p2');
+    }
+
     const BROWSER_FAILURE_COPY = {
-      locked: ['Browser view locked', 'This gateway does not open browser sessions to this page. Browser control stays closed by design.'],
+      locked: ['Browser view locked', 'Sign in with Touch ID to open the browser view. Without sign-in, browser control stays closed.'],
+      lockedSignedIn: ['Browser view locked', 'This sign-in does not include browser control. Sign out and sign in again to grant it.'],
       blocked: ['Browser service unreachable', 'This page could not reach the browser service. The page security policy may block it, or the service is not running.'],
       offline: ['Offline', 'There is no network connection, so the browser state could not be loaded.'],
       error: ['Browser service error', 'The browser service answered, but its state could not be shown.'],
@@ -8567,11 +8620,12 @@
     // overwrite a newer success (or the other way round).
     const browserStateSeq = { 'sess-1': 0, 'sess-2': 0 };
 
-    function renderBrowserUnavailable(sessionId, status, err) {
-      const viewport = document.getElementById(sessionId === 'sess-2' ? 'browserViewport2' : 'browserViewport');
+    function renderBrowserUnavailable(sessionId, status, err, pane = paneForSession(sessionId)) {
+      const viewport = document.getElementById(pane === 'p2' ? 'browserViewport2' : 'browserViewport');
       if (!viewport) return null;
       const kind = classifyBrowserFailure(status, err);
-      const [title, reason] = BROWSER_FAILURE_COPY[kind];
+      const signedIn = typeof currentAuthToken !== 'undefined' && !!currentAuthToken;
+      const [title, reason] = BROWSER_FAILURE_COPY[kind === 'locked' && signedIn ? 'lockedSignedIn' : kind];
       const hadFocus = !!(document.activeElement && viewport.contains && viewport.contains(document.activeElement));
       const box = document.createElement('div');
       box.className = 'browser-unavailable';
@@ -8591,11 +8645,11 @@
       retry.type = 'button';
       retry.className = 'btn-small browser-unavailable-retry';
       retry.textContent = 'Check again';
-      retry.addEventListener('click', () => fetchBrowserState(sessionId));
+      retry.addEventListener('click', () => fetchBrowserState(sessionId, pane));
       box.append(live, retry);
       viewport.replaceChildren(box);
-      const paneTitle = document.getElementById(sessionId === 'sess-2' ? 'pane2Title' : 'pane1Title');
-      if (paneTitle) paneTitle.textContent = `${sessionId === 'sess-2' ? 'P2' : 'P1'} · ${title}`;
+      const paneTitle = document.getElementById(pane === 'p2' ? 'pane2Title' : 'pane1Title');
+      if (paneTitle) paneTitle.textContent = `${pane === 'p2' ? 'P2' : 'P1'} · ${title}`;
       if (hadFocus) retry.focus();
       const checked = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       setTimeout(() => {
@@ -8606,27 +8660,28 @@
       return kind;
     }
 
-    async function fetchBrowserState(sessionId = 'sess-1') {
+    async function fetchBrowserState(sessionId = paneSessionId.p1, pane = paneForSession(sessionId)) {
       const seq = browserStateSeq[sessionId] = (browserStateSeq[sessionId] || 0) + 1;
-      const isLatest = () => seq === browserStateSeq[sessionId];
+      const epoch = browserAuthEpoch;
+      const isLatest = () => seq === browserStateSeq[sessionId] && epoch === browserAuthEpoch && paneSessionId[pane] === sessionId;
       let res;
       try {
-        res = await fetch(`http://127.0.0.1:8788/api/browser/state?sessionId=${encodeURIComponent(sessionId)}`);
+        res = await fetch(`http://127.0.0.1:8788/api/browser/state?sessionId=${encodeURIComponent(sessionId)}`, { headers: browserAuthHeaders(), cache: 'no-store' });
       } catch (e) {
         console.warn('Failed to fetch browser state', e);
-        if (isLatest()) renderBrowserUnavailable(sessionId, 0, e);
+        if (isLatest()) renderBrowserUnavailable(sessionId, 0, e, pane);
         return;
       }
       if (!isLatest()) return;
       if (!res.ok) {
-        renderBrowserUnavailable(sessionId, res.status, null);
+        renderBrowserUnavailable(sessionId, res.status, null, pane);
         return;
       }
       try {
         const st = await res.json();
         if (!isLatest()) return;
         if (!st || typeof st !== 'object' || typeof st.kind !== 'string') throw new Error('browser state has no kind');
-        if (sessionId === 'sess-2') {
+        if (pane === 'p2') {
           browserState2 = st;
           renderBrowserViewport2();
           if (activeFocusedPane === 'bottom' && browserUrlInput) {
@@ -8643,14 +8698,15 @@
         updateNavBtnStates();
       } catch (e) {
         console.warn('Browser state could not be shown', e);
-        if (isLatest()) renderBrowserUnavailable(sessionId, res.status, e);
+        if (isLatest()) renderBrowserUnavailable(sessionId, res.status, e, pane);
       }
     }
 
-    async function navigateBrowser(url, sessionId = 'sess-1', isTraverse = false) {
+    async function navigateBrowser(url, sessionId = paneSessionId.p1, isTraverse = false, pane = paneForSession(sessionId)) {
       if (!url) return;
+      const epoch = browserAuthEpoch;
       let target = url.trim();
-      const currSt = (sessionId === 'sess-2') ? browserState2 : browserState;
+      const currSt = (pane === 'p2') ? browserState2 : browserState;
       const isYtActive = (currSt && currSt.kind === 'youtube') || (document.querySelector('.teleport-chip[data-teleport="youtube"]')?.classList.contains('is-active'));
 
       if (!target.startsWith('http://') && !target.startsWith('https://')) {
@@ -8665,7 +8721,7 @@
       try {
         const res = await fetch('http://127.0.0.1:8788/api/browser/navigate', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...browserAuthHeaders() },
           body: JSON.stringify({ url: target, sessionId })
         });
         if (!res.ok) {
@@ -8676,6 +8732,8 @@
         }
         if (res.ok) {
           const st = await res.json();
+          // Drop the answer if the user signed in/out meanwhile or the pane now shows another session.
+          if (epoch !== browserAuthEpoch || paneSessionId[pane] !== sessionId) return false;
           // A completed navigation is newer than any state request still in flight.
           browserStateSeq[sessionId] = (browserStateSeq[sessionId] || 0) + 1;
           if (!isBrowserOpen) {
@@ -8693,7 +8751,7 @@
             }
             updateNavBtnStates();
           }
-          if (sessionId === 'sess-2') {
+          if (pane === 'p2') {
             browserState2 = st;
             renderBrowserViewport2();
             if (activeFocusedPane === 'bottom' && browserUrlInput) {
@@ -8740,9 +8798,11 @@
       if (addText) addText.textContent = enabled ? '− Single' : '+ Pane';
 
       if (enabled) {
-        if (!browserState2) {
-          fetchBrowserState('sess-2');
+        if (paneSessionId.p2 === paneSessionId.p1) {
+          paneSessionId.p2 = paneSessionId.p1 === 'sess-2' ? 'sess-1' : 'sess-2';
+          browserState2 = null;
         }
+        fetchBrowserState(paneSessionId.p2, 'p2');
         setActiveFocusedPane('bottom');
       } else {
         setActiveFocusedPane('top');
@@ -8773,9 +8833,9 @@
       if (browserStage) browserStage.setAttribute('aria-hidden', String(!open));
 
       if (open) {
-        fetchBrowserState('sess-1');
+        fetchBrowserState(paneSessionId.p1, 'p1');
         if (isDualBrowser) {
-          fetchBrowserState('sess-2');
+          fetchBrowserState(paneSessionId.p2, 'p2');
         }
       }
     }
@@ -8993,6 +9053,8 @@
             </div>
           </div>
         `;
+      } else if (!isSafeFrameUrl(browserState.url)) {
+        renderBrowserUnavailable(paneSessionId.p1, 200, new Error('unsafe frame url'), 'p1');
       } else {
         browserViewport.innerHTML = `
           <div class="web-viewport-container" style="width: 100%; height: 100%; display: flex; flex-direction: column;">
@@ -9011,7 +9073,8 @@
     async function renderYouTubeWorkstation(container, paneId, videoId, query) {
       if (!container) return;
       const q = query || 'teenage engineering';
-      const sid = (paneId === 'p2') ? 'sess-2' : 'sess-1';
+      const ytPane = (paneId === 'p2') ? 'p2' : 'p1';
+      const sid = paneSessionId[ytPane];
 
       container.innerHTML = `
         <div class="yt-workstation" style="width: 100%; height: 100%; display: flex; flex-direction: column; background: #0a0d14; overflow: hidden; font-family: var(--font-display);">
@@ -9163,7 +9226,7 @@
                   }
                   doSearch(targetQ);
                 } else {
-                  navigateBrowser(clickUrl, sid);
+                  navigateBrowser(clickUrl, sid, false, ytPane);
                 }
               });
             });
@@ -9398,6 +9461,8 @@
             </div>
           </div>
         `;
+      } else if (!isSafeFrameUrl(browserState2.url)) {
+        renderBrowserUnavailable(paneSessionId.p2, 200, new Error('unsafe frame url'), 'p2');
       } else {
         vp2.innerHTML = `
           <div class="web-viewport-container" style="width: 100%; height: 100%; display: flex; flex-direction: column;">
@@ -9415,6 +9480,11 @@
 
     function swapPanes() {
       if (!isDualBrowser) return;
+      if (!browserState || !browserState2) {
+        showToast('Both panes need a loaded page before they can be swapped.', 'info', { dedupKey: 'swap-empty' });
+        return;
+      }
+      [paneSessionId.p1, paneSessionId.p2] = [paneSessionId.p2, paneSessionId.p1];
       const tmp = browserState;
       browserState = browserState2;
       browserState2 = tmp;
@@ -9562,8 +9632,8 @@
       resizer.setAttribute('aria-orientation', 'vertical');
       resizer.setAttribute('aria-label', 'Chat workstation width resizer');
       if (!resizer.getAttribute('aria-valuenow')) resizer.setAttribute('aria-valuenow', '480');
-      if (!resizer.getAttribute('aria-valuemin')) resizer.setAttribute('aria-valuemin', '280');
-      if (!resizer.getAttribute('aria-valuemax')) resizer.setAttribute('aria-valuemax', '900');
+      if (!resizer.getAttribute('aria-valuemin')) resizer.setAttribute('aria-valuemin', '340');
+      if (!resizer.getAttribute('aria-valuemax')) resizer.setAttribute('aria-valuemax', '840');
 
       const updateChatWidth = (clientX, forceSnap = false) => {
         const minW = 340;
@@ -9798,30 +9868,30 @@
     });
 
     document.getElementById('browserBackBtn')?.addEventListener('click', () => {
-      const sid = (activeFocusedPane === 'bottom' && isDualBrowser) ? 'sess-2' : 'sess-1';
+      const pane = focusedBrowserPane(), sid = paneSessionId[pane];
       const h = browserHistory[sid];
       if (h && h.index > 0) {
         h.index--;
         updateNavBtnStates();
-        navigateBrowser(h.stack[h.index], sid, true);
+        navigateBrowser(h.stack[h.index], sid, true, pane);
       }
     });
 
     document.getElementById('browserForwardBtn')?.addEventListener('click', () => {
-      const sid = (activeFocusedPane === 'bottom' && isDualBrowser) ? 'sess-2' : 'sess-1';
+      const pane = focusedBrowserPane(), sid = paneSessionId[pane];
       const h = browserHistory[sid];
       if (h && h.index < h.stack.length - 1) {
         h.index++;
         updateNavBtnStates();
-        navigateBrowser(h.stack[h.index], sid, true);
+        navigateBrowser(h.stack[h.index], sid, true, pane);
       }
     });
 
     document.getElementById('browserReloadBtn')?.addEventListener('click', () => {
-      const sid = (activeFocusedPane === 'bottom' && isDualBrowser) ? 'sess-2' : 'sess-1';
-      const currSt = (sid === 'sess-2') ? browserState2 : browserState;
+      const pane = focusedBrowserPane(), sid = paneSessionId[pane];
+      const currSt = (pane === 'p2') ? browserState2 : browserState;
       if (currSt && currSt.url) {
-        navigateBrowser(currSt.url, sid, true);
+        navigateBrowser(currSt.url, sid, true, pane);
       }
     });
 
@@ -9879,10 +9949,17 @@
         const w = Math.round(chatColumnForAria.getBoundingClientRect().width);
         if (!w) return;
         chatResizerForAria.setAttribute('aria-valuenow', String(w));
+        chatResizerForAria.setAttribute('aria-valuemin', '340');
+        chatResizerForAria.setAttribute('aria-valuemax', String(Math.max(340, Math.min(840, window.innerWidth - 360, splitChatHalfWidth()))));
         const b = document.getElementById('chatResizerBadge');
         if (b) b.textContent = `${w}px`;
       }).observe(chatColumnForAria);
     }
+
+    window.addEventListener('resize', () => {
+      const r = document.getElementById('chatWidthResizer');
+      if (r) r.setAttribute('aria-valuemax', String(Math.max(340, Math.min(840, window.innerWidth - 360, splitChatHalfWidth()))));
+    });
 
     // Initialize Draggable Splitters
     initSplitterDrag();
