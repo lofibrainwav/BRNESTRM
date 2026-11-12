@@ -15,5 +15,6 @@ jobs:
           python-version: '3.11'
       - run: node tests/test_ui_contract.cjs
       - run: node tests/test_console_reliability.cjs
+      - run: node tests/test_browser_split.cjs
       - run: python3 -m py_compile brnestrm-gateway.py brnestrm_agent_runtime.py brnestrm_operational_health.py ops/backup-manager.py ops/health-alert-monitor.py ops/ops-status.py ops/recovery-key-escrow.py ops/reboot-verifier.py ops/independent-recovery-drill.py
       - run: python3 scripts/check_public_source.py

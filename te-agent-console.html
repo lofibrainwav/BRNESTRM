@@ -3684,10 +3684,10 @@
       bottom: 0 !important;
       left: auto !important;
       right: auto !important;
-      flex: 0 0 var(--split-chat-width, 480px) !important;
-      width: var(--split-chat-width, 480px) !important;
+      flex: 0 0 min(var(--split-chat-width, 480px), 50%) !important;
+      width: min(var(--split-chat-width, 480px), 50%) !important;
       min-width: 340px !important;
-      max-width: var(--split-chat-width, 480px) !important;
+      max-width: min(var(--split-chat-width, 480px), 50%) !important;
       flex-grow: 0 !important;
       flex-shrink: 0 !important;
       height: 100% !important;
@@ -3754,9 +3754,9 @@
       bottom: 0 !important;
       left: auto !important;
       right: 0 !important;
-      width: var(--split-chat-width, 480px) !important;
+      width: min(var(--split-chat-width, 480px), 50%) !important;
       min-width: 340px !important;
-      max-width: var(--split-chat-width, 480px) !important;
+      max-width: min(var(--split-chat-width, 480px), 50%) !important;
       margin: 0 !important;
       padding: 10px 14px 14px !important;
       box-sizing: border-box !important;
@@ -4523,6 +4523,91 @@
       border-radius: 6px;
     }
     .agent-prose-text pre code { padding: 0; background: none; }
+    /* Browser split hardening: honest failure state, a toolbar that keeps the close button, half-width chat cap. */
+    .browser-unavailable {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 32px 24px;
+      box-sizing: border-box;
+      text-align: center;
+      color: var(--ink-secondary);
+      background: var(--bg-canvas);
+    }
+    .browser-unavailable-live {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .browser-unavailable-title {
+      margin: 0;
+      font-family: var(--font-display);
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--ink-primary);
+      text-wrap: balance;
+    }
+    .browser-unavailable-title::before {
+      content: "";
+      display: block;
+      width: 28px;
+      height: 2px;
+      margin: 0 auto 12px;
+      background: var(--polo-brass);
+    }
+    .browser-unavailable[data-kind="error"] .browser-unavailable-title::before { background: var(--polo-red); }
+    .browser-unavailable-reason {
+      margin: 0;
+      max-width: 46ch;
+      font-size: 13px;
+      line-height: 1.55;
+      text-wrap: pretty;
+    }
+    .browser-unavailable-meta {
+      margin: 0;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.02em;
+      color: var(--ink-muted);
+    }
+    .browser-unavailable-retry { margin-top: 8px; }
+
+    .header-omnibar-slot { container-type: inline-size; }
+    .header-omnibar-slot .browser-teleport-chips {
+      flex: 0 1 auto;
+      min-width: 0;
+      scrollbar-width: thin;
+      overscroll-behavior-x: contain;
+    }
+    .header-omnibar-slot .browser-url-bar.on-navy { min-width: 96px; }
+    @container (max-width: 760px) {
+      .header-omnibar-slot .co-vision-text,
+      .header-omnibar-slot #addBrowserPaneText { display: none; }
+    }
+    @container (max-width: 560px) {
+      .header-omnibar-slot .browser-teleport-chips { display: none; }
+    }
+    @container (max-width: 420px) {
+      .header-omnibar-slot #browserBackBtn,
+      .header-omnibar-slot #browserForwardBtn { display: none; }
+      .header-omnibar-slot .browser-url-bar.on-navy { min-width: 0; }
+    }
+    @container (max-width: 300px) {
+      .header-omnibar-slot #browserPingPongBtn,
+      .header-omnibar-slot .co-vision-badge,
+      .header-omnibar-slot #browserPaneSelector { display: none !important; }
+    }
+    /* Last resort: only the close button stays, so web mode can always be left. */
+    @container (max-width: 170px) {
+      .header-omnibar-slot .browser-nav-group,
+      .header-omnibar-slot .browser-url-bar,
+      .header-omnibar-slot #addBrowserPaneBtn { display: none; }
+    }
+
     @media (max-width: 710px) {
       .composer-dock { padding-left: 10px; padding-right: 10px; }
       .composer-inner { padding: 9px 9px; }
@@ -8306,29 +8391,108 @@
       navigateBrowser(url, sessId);
     }
 
+    // The split CSS caps the chat column at half the stage; the splitter uses the same cap.
+    function splitChatHalfWidth() {
+      const stage = document.querySelector('.main-stage');
+      return Math.floor(((stage && stage.clientWidth) || window.innerWidth) / 2);
+    }
+
+    // Browser pane failure states: a failed state request must never leave the pane blank.
+    // locked = 401/403 (this gateway refuses browser control), blocked = no response at all
+    // (CSP, service down), offline = no network, error = a response that cannot be shown.
+    function classifyBrowserFailure(status, err) {
+      if (status === 401 || status === 403) return 'locked';
+      if (!status && err) return (typeof navigator !== 'undefined' && navigator.onLine === false) ? 'offline' : 'blocked';
+      return 'error';
+    }
+
+    const BROWSER_FAILURE_COPY = {
+      locked: ['Browser view locked', 'This gateway does not open browser sessions to this page. Browser control stays closed by design.'],
+      blocked: ['Browser service unreachable', 'This page could not reach the browser service. The page security policy may block it, or the service is not running.'],
+      offline: ['Offline', 'There is no network connection, so the browser state could not be loaded.'],
+      error: ['Browser service error', 'The browser service answered, but its state could not be shown.'],
+    };
+
+    // Each pane only renders the answer to its latest request, so a slow failure cannot
+    // overwrite a newer success (or the other way round).
+    const browserStateSeq = { 'sess-1': 0, 'sess-2': 0 };
+
+    function renderBrowserUnavailable(sessionId, status, err) {
+      const viewport = document.getElementById(sessionId === 'sess-2' ? 'browserViewport2' : 'browserViewport');
+      if (!viewport) return null;
+      const kind = classifyBrowserFailure(status, err);
+      const [title, reason] = BROWSER_FAILURE_COPY[kind];
+      const hadFocus = !!(document.activeElement && viewport.contains && viewport.contains(document.activeElement));
+      const box = document.createElement('div');
+      box.className = 'browser-unavailable';
+      box.dataset.kind = kind;
+      // The live region is inserted empty and filled on the next tick, so screen readers announce it.
+      const live = document.createElement('div');
+      live.className = 'browser-unavailable-live';
+      live.setAttribute('role', 'status');
+      const heading = document.createElement('p');
+      heading.className = 'browser-unavailable-title';
+      const body = document.createElement('p');
+      body.className = 'browser-unavailable-reason';
+      const meta = document.createElement('p');
+      meta.className = 'browser-unavailable-meta';
+      live.append(heading, body, meta);
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'btn-small browser-unavailable-retry';
+      retry.textContent = 'Check again';
+      retry.addEventListener('click', () => fetchBrowserState(sessionId));
+      box.append(live, retry);
+      viewport.replaceChildren(box);
+      const paneTitle = document.getElementById(sessionId === 'sess-2' ? 'pane2Title' : 'pane1Title');
+      if (paneTitle) paneTitle.textContent = `${sessionId === 'sess-2' ? 'P2' : 'P1'} · ${title}`;
+      if (hadFocus) retry.focus();
+      const checked = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      setTimeout(() => {
+        heading.textContent = title;
+        body.textContent = reason;
+        meta.textContent = `${status ? `HTTP ${status}` : 'No response'} · checked ${checked} · Nothing is running in this pane.`;
+      }, 0);
+      return kind;
+    }
+
     async function fetchBrowserState(sessionId = 'sess-1') {
+      const seq = ++browserStateSeq[sessionId];
+      const isLatest = () => seq === browserStateSeq[sessionId];
+      let res;
       try {
-        const res = await fetch(`http://127.0.0.1:8788/api/browser/state?sessionId=${encodeURIComponent(sessionId)}`);
-        if (res.ok) {
-          const st = await res.json();
-          if (sessionId === 'sess-2') {
-            browserState2 = st;
-            renderBrowserViewport2();
-            if (activeFocusedPane === 'bottom' && browserUrlInput) {
-              browserUrlInput.value = browserState2.url || '';
-            }
-          } else {
-            browserState = st;
-            if (activeFocusedPane === 'top' && browserUrlInput) {
-              browserUrlInput.value = browserState.url || '';
-            }
-            renderBrowserViewport();
-          }
-          updateCovisionRibbon();
-          updateNavBtnStates();
-        }
+        res = await fetch(`http://127.0.0.1:8788/api/browser/state?sessionId=${encodeURIComponent(sessionId)}`);
       } catch (e) {
         console.warn('Failed to fetch browser state', e);
+        if (isLatest()) renderBrowserUnavailable(sessionId, 0, e);
+        return;
+      }
+      if (!isLatest()) return;
+      if (!res.ok) {
+        renderBrowserUnavailable(sessionId, res.status, null);
+        return;
+      }
+      try {
+        const st = await res.json();
+        if (!isLatest()) return;
+        if (sessionId === 'sess-2') {
+          browserState2 = st;
+          renderBrowserViewport2();
+          if (activeFocusedPane === 'bottom' && browserUrlInput) {
+            browserUrlInput.value = browserState2.url || '';
+          }
+        } else {
+          browserState = st;
+          if (activeFocusedPane === 'top' && browserUrlInput) {
+            browserUrlInput.value = browserState.url || '';
+          }
+          renderBrowserViewport();
+        }
+        updateCovisionRibbon();
+        updateNavBtnStates();
+      } catch (e) {
+        console.warn('Browser state could not be shown', e);
+        if (isLatest()) renderBrowserUnavailable(sessionId, res.status, e);
       }
     }
 
@@ -8667,7 +8831,7 @@
                 <span style="font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: #fff;">ChatGPT · Project Operator CPA</span>
               </div>
               <div style="font-size: 12px; color: var(--ink-secondary); line-height: 1.4;">
-                The shared ChatGPT project in ego lite is active and authenticated. Open directly in ego lite Space or debate via BRNESTRM gateway.
+                Open the shared ChatGPT project in ego lite, or start a debate through the BRNESTRM gateway. Its sign-in state is not checked here.
               </div>
               <div style="display: flex; gap: 8px; margin-top: 6px;">
                 <a href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer" class="btn-small primary" style="text-decoration: none; padding: 6px 14px; font-weight: 600;">Open in ego lite ↗</a>
@@ -9059,7 +9223,7 @@
                 <span style="font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: #fff;">ChatGPT · Project Operator CPA</span>
               </div>
               <div style="font-size: 12px; color: var(--ink-secondary); line-height: 1.4;">
-                The shared ChatGPT project in ego lite is active and authenticated. Open directly in ego lite Space or debate via BRNESTRM gateway.
+                Open the shared ChatGPT project in ego lite, or start a debate through the BRNESTRM gateway. Its sign-in state is not checked here.
               </div>
               <div style="display: flex; gap: 8px; margin-top: 6px;">
                 <a href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer" class="btn-small primary" style="text-decoration: none; padding: 6px 14px; font-weight: 600;">Open in ego lite ↗</a>
@@ -9237,7 +9401,7 @@
 
       const updateChatWidth = (clientX, forceSnap = false) => {
         const minW = 340;
-        const maxW = Math.max(minW, Math.min(840, window.innerWidth - 360));
+        const maxW = Math.max(minW, Math.min(840, window.innerWidth - 360, splitChatHalfWidth()));
         let newWidth = Math.max(minW, Math.min(maxW, window.innerWidth - clientX));
 
         let isSnapped = false;
@@ -9305,7 +9469,7 @@
           e.preventDefault();
           return;
         } else if (e.key === 'End') {
-          const maxW = Math.max(340, Math.min(840, window.innerWidth - 360));
+          const maxW = Math.max(340, Math.min(840, window.innerWidth - 360, splitChatHalfWidth()));
           document.documentElement.style.setProperty('--split-chat-width', `${maxW}px`);
           resizer.setAttribute('aria-valuenow', String(Math.round(maxW)));
           if (badge) badge.textContent = `${Math.round(maxW)}px`;
