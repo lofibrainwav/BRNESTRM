@@ -11,6 +11,10 @@ test('the console itself is refused (no console inside its own pane)', !p.siteUr
 test('non-web schemes are refused', ['file:///etc/passwd', 'javascript:alert(1)', 'chrome://settings', 'data:text/html,x', 'about:blank'].every(u => !p.siteUrlAllowed(u, CONSOLE)));
 test('credentials in URLs and overlong URLs are refused', !p.siteUrlAllowed('https://user:pw@example.org/', CONSOLE) && !p.siteUrlAllowed('https://example.org/' + 'a'.repeat(2100), CONSOLE) && !p.siteUrlAllowed(42, CONSOLE));
 test('only the console top frame may drive the shell', p.senderAllowed('http://127.0.0.1:8788/', CONSOLE, true) && !p.senderAllowed('http://127.0.0.1:8788/', CONSOLE, false) && !p.senderAllowed('https://evil.example/', CONSOLE, true) && !p.senderAllowed('http://127.0.0.1:8794/', CONSOLE, true));
+const longRedirect = 'https://accounts.google.com/CheckCookie?continue=' + encodeURIComponent('https://www.youtube.com/signin?next=' + 'x'.repeat(4000));
+test('long sign-in redirects inside a page are followed (2048 is only for console-typed addresses)', p.siteNavigationAllowed(longRedirect, CONSOLE) && !p.siteUrlAllowed(longRedirect, CONSOLE));
+test('long pop-up URLs from sign-in hosts still open', p.popupDecision(longRedirect, 'new-window', CONSOLE) === 'window');
+test('in-page navigation still refuses the console, bridge and non-web schemes', !p.siteNavigationAllowed('http://localhost:8788/', CONSOLE) && !p.siteNavigationAllowed('file:///etc/passwd', CONSOLE) && !p.siteNavigationAllowed('http://127.0.0.1:8794/frame', CONSOLE));
 test('only panes p1 and p2 exist', p.paneAllowed('p1') && p.paneAllowed('p2') && !p.paneAllowed('p3') && !p.paneAllowed({}));
 const r = p.clampRect({ x: 10.4, y: 20.6, width: 500, height: 400 }, 1600, 1000);
 test('bounds are rounded integers inside the window', r && r.x === 10 && r.y === 21 && r.width === 500 && r.height === 400);

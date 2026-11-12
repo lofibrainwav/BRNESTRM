@@ -27,6 +27,8 @@ if (process.env.BRNESTRM_DESKTOP_ALLOW_DEBUG !== '1' && DEBUG_SWITCHES.some(s =>
   console.error('BRNESTRM desktop refuses to start with a debugging switch.');
   app.exit(1);
 }
+// A separate profile folder (tests, or a second copy) gets its own instance lock and login store.
+if (process.env.BRNESTRM_DESKTOP_PROFILE_DIR) app.setPath('userData', path.resolve(process.env.BRNESTRM_DESKTOP_PROFILE_DIR));
 if (!app.requestSingleInstanceLock()) app.exit(0);
 
 let win = null;
@@ -74,8 +76,8 @@ function hardenSiteContents(wc, pane) {
     return { action: 'deny' };
   });
   // A page may not navigate to file:, chrome:, the console or the bridge, and the like.
-  wc.on('will-navigate', (event, url) => { if (!policy.siteUrlAllowed(url, CONSOLE_ORIGIN)) event.preventDefault(); });
-  wc.on('will-redirect', (event, url) => { if (!policy.siteUrlAllowed(url, CONSOLE_ORIGIN)) event.preventDefault(); });
+  wc.on('will-navigate', (event, url) => { if (!policy.siteNavigationAllowed(url, CONSOLE_ORIGIN)) event.preventDefault(); });
+  wc.on('will-redirect', (event, url) => { if (!policy.siteNavigationAllowed(url, CONSOLE_ORIGIN)) event.preventDefault(); });
   wc.on('will-frame-navigate', event => { if (!event.isMainFrame && !policy.frameUrlAllowed(event.url)) event.preventDefault(); });
   if (isPopup) {
     // A pop-up always shows which site it is, so a look-alike sign-in window is recognisable.
