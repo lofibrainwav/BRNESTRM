@@ -1571,10 +1571,12 @@ class Handler(BaseHTTPRequestHandler):
                 r = _ego_bridge("GET", "/frame?session=" + urllib.parse.quote(sid), timeout=10)
             if not r:
                 return self._json(503, {"ok": False, "error": "screen_unavailable"})
-            if r[0] != 200 or not r[2].startswith(b"\x89PNG"):
+            # Only image bytes the bridge actually produced: JPEG frames, or PNG from the fallback path.
+            ctype = "image/jpeg" if r[2].startswith(b"\xff\xd8\xff") else "image/png" if r[2].startswith(b"\x89PNG") else None
+            if r[0] != 200 or not ctype:
                 return self._json(502, {"ok": False, "error": "screen_failed"})
             self.send_response(200)
-            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Type", ctype)
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             for h in ("X-Page-Width", "X-Page-Height", "X-Page-Url", "X-Page-Title"):
