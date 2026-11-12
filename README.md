@@ -24,6 +24,7 @@ Open http://127.0.0.1:8788 locally. Never bind a public network interface.
     node tests/test_ui_contract.cjs
     node tests/test_console_reliability.cjs
     node tests/test_browser_split.cjs
+    python3 -B tests/test_gateway_browser.py
 
 ## Chat history
 

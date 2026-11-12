@@ -1095,17 +1095,28 @@ def get_browser_state(session_id="sess-1"):
         return dict(_browser_sessions[session_id])
 
 
+def normalize_browser_target(url):
+    """http(s) URLs keep their scheme (any case); bare domains get https://; anything else is a search."""
+    u = url.strip()
+    low = u.lower()
+    if low.startswith("http://") or low.startswith("https://"):
+        return u
+    if low.startswith("yt:"):
+        return "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(u[3:].strip())
+    if "." in u and " " not in u and not _URL_SCHEME_RE.match(u):
+        return "https://" + u
+    return "https://www.google.com/search?q=" + urllib.parse.quote_plus(u)
+
+
 def set_browser_navigate(url, session_id="sess-1"):
     with _browser_lock:
         if session_id not in _browser_sessions:
             _browser_sessions[session_id] = _init_session_browser(session_id)
+        _browser_sessions[session_id] = _browser_sessions.pop(session_id)  # most recently used last
         st = _browser_sessions[session_id]
-        u = url.strip()
-        if not u.startswith("http://") and not u.startswith("https://"):
-            if "." in u and " " not in u:
-                u = "https://" + u
-            else:
-                u = "https://www.google.com/search?q=" + urllib.parse.quote_plus(u)
+        for stale in ("videoId", "searchQuery", "externalLlm"):
+            st.pop(stale, None)
+        u = normalize_browser_target(url)
 
         if ":8765" in u or "workspace" in u:
             st.update({
@@ -1137,7 +1148,7 @@ def set_browser_navigate(url, session_id="sess-1"):
                 "externalLlm": "Gemini 2.5 Pro",
                 "active": True
             })
-        elif "youtube.com" in u or "youtu.be" in u or u.startswith("yt:"):
+        elif "youtube.com" in u or "youtu.be" in u or url.strip().lower().startswith("yt:"):
             vid = _extract_youtube_id(u)
             search_q = ""
             if not vid:
@@ -1147,8 +1158,8 @@ def set_browser_navigate(url, session_id="sess-1"):
                         search_q = urllib.parse.parse_qs(parsed.query).get("search_query", [""])[0]
                     except Exception:
                         pass
-                elif u.startswith("yt:"):
-                    search_q = u[3:].strip()
+                elif url.strip().lower().startswith("yt:"):
+                    search_q = url.strip()[3:].strip()
             st.update({
                 "url": u,
                 "title": f"YouTube Video ({vid})" if vid else (f"YouTube: {search_q}" if search_q else "YouTube Media Hub"),
@@ -1165,11 +1176,57 @@ def set_browser_navigate(url, session_id="sess-1"):
                 "active": True
             })
         return dict(st)
-        return dict(st)
 
 
 def _valid_chat_session(value):
     return isinstance(value, str) and re.fullmatch(r"sess-[A-Za-z0-9_-]{1,80}", value) is not None
+
+
+# Browser control opens only for a verified capability. The state is an in-memory record of
+# which page each console session shows; nothing here drives a real browser or writes outside.
+BROWSER_SCOPE = "te-design-house"
+BROWSER_PERMISSION = "control:browser"
+BROWSER_MAX_SESSIONS = 64
+_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def _valid_browser_target(value):
+    """http(s) URLs, yt: queries, bare domains and plain search text; never other schemes."""
+    if not isinstance(value, str):
+        return False
+    v = value.strip()
+    if not v or len(v) > 2048 or any(ord(c) < 32 for c in v):
+        return False
+    if _URL_SCHEME_RE.match(v):
+        return v.lower().startswith(("http://", "https://", "yt:"))
+    return True
+
+
+BROWSER_STATE_PUBLIC_KEYS = ("sessionId", "url", "title", "kind", "videoId", "searchQuery", "externalLlm", "active")
+
+
+def public_browser_state(state):
+    """Only what the console renders; restored transcripts and ping-pong history stay server-side."""
+    return {k: state[k] for k in BROWSER_STATE_PUBLIC_KEYS if k in state}
+
+
+def _reserve_browser_session(session_id):
+    """Create or touch a session; beyond the cap the least recently used one is dropped."""
+    with _browser_lock:
+        if session_id in _browser_sessions:
+            _browser_sessions[session_id] = _browser_sessions.pop(session_id)
+        else:
+            while len(_browser_sessions) >= BROWSER_MAX_SESSIONS:
+                _browser_sessions.pop(next(iter(_browser_sessions)))
+            _browser_sessions[session_id] = _init_session_browser(session_id)
+
+
+def _targets_this_gateway(normalized):
+    try:
+        parsed = urllib.parse.urlparse(normalized)
+        return (parsed.hostname or "") in ("127.0.0.1", "localhost") and (parsed.port or 80) == PORT
+    except ValueError:
+        return True
 
 
 def pingpong_turn(prompt, target="hermes", session_id=""):
@@ -1434,8 +1491,17 @@ class Handler(BaseHTTPRequestHandler):
             ok, status_code, err_msg = check_private_data_access(self.headers, resource="intranet ledger tasks")
             return self._json(status_code, {"ok": False, "error": err_msg})
         if p == "/api/browser/state":
-            ok, status_code, err_msg = check_private_data_access(self.headers, resource="browser session state")
-            return self._json(status_code, {"ok": False, "error": err_msg})
+            ok_auth, status_code, err_msg, _ = check_authenticated_capability(
+                self.headers, required_scope=BROWSER_SCOPE, required_permission=BROWSER_PERMISSION
+            )
+            if not ok_auth:
+                return self._json(status_code, {"ok": False, "error": err_msg})
+            params = dict(urllib.parse.parse_qsl(self.path.partition("?")[2]))
+            sid = params.get("sessionId", "sess-1")
+            if not _valid_chat_session(sid):
+                return self._json(400, {"ok": False, "error": "bad_request: invalid sessionId"})
+            _reserve_browser_session(sid)
+            return self._json(200, {"ok": True, **public_browser_state(get_browser_state(sid))})
         if p == "/api/sillok":
             ok, status_code, err_msg = check_private_data_access(self.headers, resource="sillok audit ledger")
             return self._json(status_code, {"ok": False, "error": err_msg})
@@ -1699,7 +1765,7 @@ class Handler(BaseHTTPRequestHandler):
             # Server-side allowlists for scopes and permissions
             ALLOWED_WORKSPACE_SCOPES = {"te-design-house", "SYSTEM"}
             ALLOWED_PERMISSIONS_BY_SCOPE = {
-                "te-design-house": {"read:provenance", "read:knowledge"},
+                "te-design-house": {"read:provenance", "read:knowledge", "control:browser"},
                 "SYSTEM": {"read:provenance", "read:hermes_status"}
             }
 
@@ -1731,7 +1797,8 @@ class Handler(BaseHTTPRequestHandler):
                     intent_description=intent,
                     browser_session_id=session_id,
                     origin=req_origin,
-                    simulated_outcome=simulated_outcome
+                    simulated_outcome=simulated_outcome,
+                    peer_port=self.client_address[1],
                 )
                 if not ok or not token:
                     return self._json(code, {"ok": False, "error": msg})
@@ -1893,7 +1960,41 @@ class Handler(BaseHTTPRequestHandler):
                 424 if result.get("error") == "delegated_verification_incomplete" else 400
             )
             return self._json(status_code, result)
-        if p in ("/api/browser/navigate", "/api/browser/pingpong", "/api/browser/toggle"):
+        if p == "/api/browser/navigate":
+            ok_orig, orig_code, orig_msg, _ = extract_and_verify_request_origin(self.headers, is_mutating=True)
+            if not ok_orig:
+                return self._json(orig_code, {"ok": False, "error": orig_msg})
+            ok_auth, status_code, err_msg, auth_payload = check_authenticated_capability(
+                self.headers, required_scope=BROWSER_SCOPE, required_permission=BROWSER_PERMISSION
+            )
+            if not ok_auth:
+                return self._json(status_code, {"ok": False, "error": err_msg})
+            sid = body.get("sessionId", "sess-1") if isinstance(body, dict) else None
+            target = body.get("url") if isinstance(body, dict) else None
+            if not _valid_chat_session(sid):
+                return self._json(400, {"ok": False, "error": "bad_request: invalid sessionId"})
+            if not _valid_browser_target(target):
+                return self._json(400, {"ok": False, "error": "bad_request: url must be http(s), yt: or plain search text up to 2048 chars"})
+            normalized = normalize_browser_target(target)
+            if _targets_this_gateway(normalized):
+                return self._json(400, {"ok": False, "error": "bad_request: the console cannot open the gateway itself"})
+            try:
+                sub = auth_payload.get("sub", "unknown") if auth_payload else "unknown"
+                # Only the hostname of the normalised target: no credentials, path or query.
+                host = urllib.parse.urlparse(normalized).hostname or "unknown"
+                audit_rec = append_sillok_record(
+                    prompt=f"BROWSER_NAVIGATE session={sid}",
+                    target="browser.navigate",
+                    reply=f"principal={sub},host={host[:120]}",
+                    synthesis="SUCCESS"
+                )
+                if not audit_rec or not audit_rec.get("hash"):
+                    return self._json(500, {"ok": False, "error": "audit_failure"})
+            except Exception:
+                return self._json(500, {"ok": False, "error": "audit_failure"})
+            _reserve_browser_session(sid)
+            return self._json(200, {"ok": True, **public_browser_state(set_browser_navigate(target, sid))})
+        if p in ("/api/browser/pingpong", "/api/browser/toggle"):
             ok, status_code, err_msg = check_private_data_access(self.headers, body=body, resource="browser session control")
             return self._json(status_code, {"ok": False, "error": err_msg})
         if p == "/api/sillok":
