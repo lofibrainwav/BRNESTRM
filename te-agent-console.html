@@ -5032,6 +5032,14 @@
           <input type="text" id="newVaultSecret" class="inspector-input" placeholder="Secret / OAuth URI" style="flex: 1;" />
           <button type="button" class="btn-small primary" id="addVaultSecretBtn">Save</button>
         </div>
+        <!-- Standing grants: Kingdom 7-day approvals 형 signed once; automation uses them instead of a new link -->
+        <div class="vault-grants" style="margin-top: 10px; border-top: 1px solid var(--line-structure, rgba(127,127,127,0.2)); padding-top: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px;">
+            <span style="font-family: var(--font-display); font-size: 12px; font-weight: 600; color: var(--ink-secondary);">승인 위임 (7일)</span>
+            <span id="grantStatusBadge" style="font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-muted);">—</span>
+          </div>
+          <div id="grantListContainer" style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;"></div>
+        </div>
       </div>
 
       <!-- HUB TAB 3: AGENT WALLET (Status Display Only · Signer Unconnected) -->
@@ -6760,6 +6768,72 @@
     // =========================================================================
     // 5. VAULT & WALLET HUB + LESSONS LEARNED LEDGER
     // =========================================================================
+    // Standing grants (Kingdom DELEGATE_WORK pointers): 형 signs once per repo for 7 days and the
+    // automation merges with it instead of sending a new passkey link. Removing one here (Touch ID)
+    // stops that routing at once; the next merge for that repo asks with a link again.
+    function formatRemaining(minutes) {
+      if (minutes === null || minutes === undefined) return '기간 미상';
+      if (minutes <= 0) return '만료';
+      const d = Math.floor(minutes / 1440), h = Math.floor((minutes % 1440) / 60);
+      return d ? `${d}일 ${h}시간 남음` : `${h}시간 ${minutes % 60}분 남음`;
+    }
+    function renderGrants(grants) {
+      const box = document.getElementById('grantListContainer');
+      const badge = document.getElementById('grantStatusBadge');
+      if (!box) return;
+      if (badge) badge.textContent = grants.length ? `${grants.length}개` : '없음';
+      if (!grants.length) {
+        box.innerHTML = '<div style="font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted);">자동 사용 중인 위임이 없어요. 위임은 형이 패스키로 한 번 서명해야 효력이 생겨요.</div>';
+        return;
+      }
+      box.innerHTML = grants.map(g => `
+        <div class="vault-row">
+          <div class="vault-row-left">
+            <span class="vault-key-name"><span class="led-dot" style="width: 6px; height: 6px;"></span>
+              <span>${escapeHtml(g.repo)}</span><span class="node-badge">${escapeHtml(`${g.days ?? '?'}일 · 경로 ${g.paths ?? '?'}`)}</span></span>
+            <span class="vault-secret-val">${escapeHtml(g.expired ? '만료' : `최대 ${formatRemaining(g.remaining_minutes)}`)} · 서명 여부는 Kingdom 원장에서 확인 · ${escapeHtml(g.ref)}…</span>
+          </div>
+          <div class="vault-row-actions">
+            <button type="button" class="btn-small" data-remove-grant="${escapeHtml(g.repo)}">자동 사용 끄기</button>
+          </div>
+        </div>`).join('');
+      box.querySelectorAll('[data-remove-grant]').forEach(btn => btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        const repo = btn.getAttribute('data-remove-grant');
+        btn.disabled = true;
+        try {
+          showToast('Touch ID로 확인해 주세요. 이 저장소의 위임 자동 사용을 꺼요.', 'info', { dedupKey: 'vault-touchid' });
+          const res = await safeFetch('http://127.0.0.1:8788/api/vault/grants/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...browserAuthHeaders() },
+            body: JSON.stringify({ repo })
+          }, false, VAULT_STEP_UP_TIMEOUT_MS);
+          const d = await res.json();
+          renderGrants(Array.isArray(d.grants) ? d.grants : []);
+          showToast(`${repo} 위임 자동 사용을 껐어요. 다음 병합부터 다시 링크로 물어봐요. 위임 자체 취소는 Kingdom 원장에서 해요.`, 'success');
+        } catch (err) {
+          btn.disabled = false;
+          showToast(`위임 끄기 실패: ${vaultErrorText(err)}`, 'error', { dedupKey: `grant-rm-${repo}` });
+        }
+      }));
+    }
+    async function syncGrants() {
+      const badge = document.getElementById('grantStatusBadge');
+      if (!browserAuthHeaders().Authorization) {
+        const box = document.getElementById('grantListContainer');
+        if (box) box.innerHTML = '';
+        if (badge) badge.textContent = '🔒';
+        return;
+      }
+      try {
+        const res = await safeFetch('http://127.0.0.1:8788/api/vault/grants', { method: 'GET', headers: browserAuthHeaders() }, false, 4000);
+        const d = await res.json();
+        renderGrants(Array.isArray(d.grants) ? d.grants : []);
+      } catch (err) {
+        if (badge) badge.textContent = `확인 실패 (${err.status || '연결'})`;
+      }
+    }
+
     // Saving or deleting waits for a Touch ID prompt (60 s) or a remote passkey approval.
     const VAULT_STEP_UP_TIMEOUT_MS = 90000;
     // Plain words for the step-up refusals the gateway can return.
@@ -8231,6 +8305,7 @@
           renderVaultList();
           if (statusBadge) statusBadge.textContent = 'Locked · sign in with Touch ID';
           if (countBadge) countBadge.textContent = '🔒';
+          syncGrants();
           return;
         }
         const vRes = await safeFetch('http://127.0.0.1:8788/api/vault', { method: 'GET', headers: browserAuthHeaders() }, false, 4000);
@@ -8247,6 +8322,7 @@
           renderVaultList();
         }
         if (statusBadge) statusBadge.textContent = `Key Store (${formatObservedTime(p.lastSuccessTime)})`;
+        syncGrants();
         if (isManual) showToast('Vault 동기화 성공.', 'success', { dedupKey: 'vault-sync-ok' });
       } catch (err) {
         const classified = classifyHttpError(err.status, err);

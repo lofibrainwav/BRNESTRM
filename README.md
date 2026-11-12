@@ -76,6 +76,12 @@ process argument list, and are stored with an empty trusted-application list,
 so reading one always asks the owner. The public DENY-ALL adapter keeps the
 vault closed.
 
+The same tab lists Kingdom standing grants: 7-day approvals the owner signed
+once per repo, which Kingdom's automation tries before sending a new passkey
+link (`~/.kingdom/state/delegations`, pointers only; set
+`BRNESTRM_KINGDOM_STATE` to move it). "자동 사용 끄기" removes a repo's pointer
+behind Touch ID; revoking the grant itself stays in Kingdom's ledger.
+
 ## Chat history
 
 Opt-in by selecting Save chats. AES-256-GCM ciphertext is stored only within

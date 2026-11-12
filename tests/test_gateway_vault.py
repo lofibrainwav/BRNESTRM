@@ -82,7 +82,19 @@ def main():
     os.environ.update({'SILLOK_LEDGER_FILE': os.path.join(tmp, 'sillok.jsonl'),
                        'BRNESTRM_SECURITY_BIN': str(sec),
                        'BRNESTRM_VAULT_INDEX': os.path.join(tmp, 'brnestrm', 'vault-index.json'),
-                       'BRNESTRM_VAULT_SERVICE': 'BRNESTRM-vault-test'})
+                       'BRNESTRM_VAULT_SERVICE': 'BRNESTRM-vault-test',
+                       'BRNESTRM_KINGDOM_STATE': os.path.join(tmp, 'kingdom-state')})
+    deleg = Path(tmp) / 'kingdom-state' / 'delegations'
+    deleg.mkdir(parents=True)
+    grant_id = 'd97bb5b0-8721-460b-9fbf-a870c506a806'
+    (deleg / 'lofibrainwav__HyoDo.ref').write_text(grant_id + '\n' + 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\n')
+    (deleg / 'lofibrainwav__HyoDo.json').write_text(json.dumps({'schema': 'kingdom-delegation-pointer/v2', 'repo': 'lofibrainwav/HyoDo', 'grants': [
+        {'delegation_id': grant_id, 'days': 7, 'paths': ['src/**', 'README.md'], 'issued_at': '2026-11-11T00:00:00Z',
+         'expires_at_upper_bound': '2099-01-01T00:00:00Z', 'state': 'ISSUED_UNCONFIRMED'}]}))
+    os.symlink(deleg / 'lofibrainwav__HyoDo.ref', deleg / 'lofibrainwav__linked.ref')
+    (deleg / 'evil__..ref').write_text(grant_id + '\n')
+    (Path(tmp) / 'kingdom-state' / 'bb-sync').mkdir()
+    (Path(tmp) / 'kingdom-state' / 'bb-sync' / 'delegation-ref').write_text('11111111-2222-4333-8444-555555555555\n')
     fake = types.ModuleType('candidate_auth_authority')
     fake.CandidateAuthAuthority = FakeAuthority
     sys.modules['candidate_auth_authority'] = fake
@@ -157,6 +169,20 @@ def main():
 
         code, body = call('POST', '/api/vault/delete', {'id': 'GITHUB_TOKEN'})
         check('deleting asks for a step-up and removes the Keychain item', code == 200 and FakeAuthority.actions[-1] == 'vault delete GITHUB_TOKEN' and 'BRNESTRM-vault-test/GITHUB_TOKEN' not in store() and body['vault'] == [])
+        check('grants need a sign-in with vault:manage', call('GET', '/api/vault/grants', token=None)[0] in (401, 403) and call('GET', '/api/vault/grants', token='nobrowse')[0] == 403)
+        code, body = call('GET', '/api/vault/grants')
+        repos = sorted(g['repo'] for g in body.get('grants', []))
+        check('grants list repo pointers only (not the bb sync pointer), skipping malformed and symlinked files', code == 200 and repos == ['lofibrainwav/HyoDo'])
+        hy = next(g for g in body['grants'] if g['repo'] == 'lofibrainwav/HyoDo')
+        check('a grant shows a short id, count, days, path count, remaining time and UNCONFIRMED, never a full id', hy['ref'] == grant_id[:8] and hy['count'] == 2 and hy['days'] == 7 and hy['paths'] == 2 and hy['remaining_minutes'] > 0 and hy['state'] == 'UNCONFIRMED' and grant_id not in json.dumps(body))
+        n = len(FakeAuthority.actions)
+        check('removing an unknown repo is 404 without a prompt', call('POST', '/api/vault/grants/remove', {'repo': 'lofibrainwav/none'})[0] == 404 and len(FakeAuthority.actions) == n)
+        check('removing with a bad repo name is 400 without a prompt', call('POST', '/api/vault/grants/remove', {'repo': '../x'})[0] == 400 and len(FakeAuthority.actions) == n)
+        FakeAuthority.approve = False
+        check('a denied Touch ID keeps the grant', call('POST', '/api/vault/grants/remove', {'repo': 'lofibrainwav/HyoDo'})[0] == 403 and (deleg / 'lofibrainwav__HyoDo.ref').exists())
+        FakeAuthority.approve = True
+        code, body = call('POST', '/api/vault/grants/remove', {'repo': 'lofibrainwav/HyoDo'})
+        check('turning routing off asks Touch ID naming the repo and deletes only that pointer (bb sync pointer kept)', code == 200 and FakeAuthority.actions[-1] == 'grant remove lofibrainwav/HyoDo' and not (deleg / 'lofibrainwav__HyoDo.ref').exists() and not (deleg / 'lofibrainwav__HyoDo.json').exists() and (Path(tmp) / 'kingdom-state' / 'bb-sync' / 'delegation-ref').exists())
         ledger = Path(os.environ['SILLOK_LEDGER_FILE']).read_text()
         check('the audit ledger names the key but never holds its value', 'GITHUB_TOKEN' in ledger and SECRET not in ledger)
 
