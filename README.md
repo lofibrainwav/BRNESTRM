@@ -60,7 +60,8 @@ keeps using the Ego Lite screen view above.
   once there; nothing is copied from another browser profile.
 - Only the console's own page can position or navigate the view. Site pages run
   sandboxed with no Node and no access to the console.
-- Sites may use full screen and clipboard writes only. Camera, microphone,
+- Sites may use full screen, clipboard writes and storage access (sign-in
+  iframes) only. Camera, microphone,
   location and notifications are refused.
 - A hidden pane is muted.
 
